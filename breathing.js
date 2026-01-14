@@ -327,11 +327,11 @@
         bar.id = 'mindful-lock-bar';
 
         const update = () => {
-            const last = GM_getValue(sessionKey, 0);
+            const last = safeGM.getValue(sessionKey, 0);
             const remaining = (SESSION_MINS * 60000) - (Date.now() - last);
             if (remaining <= 0) {
                 if (relockInterval) clearInterval(relockInterval);
-                GM_deleteValue(sessionKey);
+                safeGM.deleteValue(sessionKey);
                 window.location.replace(window.location.href);
                 return;
             }
@@ -345,7 +345,7 @@
 
         bar.onclick = () => {
             if (relockInterval) clearInterval(relockInterval);
-            GM_deleteValue(sessionKey);
+            safeGM.deleteValue(sessionKey);
             window.location.replace(window.location.href);
         };
 
