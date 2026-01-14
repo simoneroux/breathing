@@ -73,6 +73,29 @@
     const sessionKey = `mindful_global_session`;
     const dailyKey = `mindful_global_count`;
 
+    // Storage Wrapper
+    const safeGM = {
+        getValue: (key, def) => {
+            if (typeof GM_getValue !== 'undefined') return GM_getValue(key, def);
+            try {
+                const val = localStorage.getItem(key);
+                return val ? JSON.parse(val) : def;
+            } catch (e) { return def; }
+        },
+        setValue: (key, val) => {
+            if (typeof GM_setValue !== 'undefined') return GM_setValue(key, val);
+            try {
+                localStorage.setItem(key, JSON.stringify(val));
+            } catch (e) { }
+        },
+        deleteValue: (key) => {
+            if (typeof GM_deleteValue !== 'undefined') return GM_deleteValue(key);
+            try {
+                localStorage.removeItem(key);
+            } catch (e) { }
+        }
+    };
+
     // Improved sanitizer with fallback
     let sanitizer = (val) => val;
     try {
@@ -85,12 +108,12 @@
     }
 
     const getStats = () => {
-        const d = GM_getValue(dailyKey, null);
+        const d = safeGM.getValue(dailyKey, null);
         return (d && d.date === new Date().toDateString()) ? d : { count: 0, date: new Date().toDateString() };
     };
 
     const isUnlocked = () => {
-        const last = GM_getValue(sessionKey, null);
+        const last = safeGM.getValue(sessionKey, null);
         return last && (Date.now() - last < SESSION_MINS * 60000);
     };
 
@@ -252,8 +275,8 @@
                         btn.textContent = "Visit Website";
                         btn.onclick = () => {
                             stats.count++;
-                            GM_setValue(dailyKey, stats);
-                            GM_setValue(sessionKey, Date.now());
+                            safeGM.setValue(dailyKey, stats);
+                            safeGM.setValue(sessionKey, Date.now());
                             window.location.replace(window.location.href);
                         };
                         return;
