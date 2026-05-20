@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#3f51b5">
+  <title>Breathe</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-a: #5c6bc0;
+      --bg-b: #3f51b5;
+      --hold-a: #303f9f;
+      --hold-b: #1a237e;
+      --duration: 5s;
+    }
+
+    html, body {
+      height: 100%;
+      overflow: hidden;
+      touch-action: manipulation;
+    }
+
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, var(--bg-a), var(--bg-b));
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      color: white;
+      transition: background 1.5s ease-in-out;
+    }
+
+    body.hold {
+      background: linear-gradient(135deg, var(--hold-a), var(--hold-b));
+    }
+
+    /* Card */
+    .card {
+      padding: clamp(2rem, 6vw, 3.5rem) clamp(1.5rem, 5vw, 3rem);
+      border-radius: 32px;
+      background: rgba(255, 255, 255, 0.12);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.18);
+      width: min(460px, 92vw);
+      text-align: center;
+      user-select: none;
+    }
+
+    h1 {
+      font-size: clamp(1.6rem, 5vw, 2.2rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .subtitle {
+      margin-top: 0.35rem;
+      font-size: clamp(0.9rem, 3vw, 1.1rem);
+      opacity: 0.7;
+    }
+
+    /* Box breathing visual */
+    .breather {
+      position: relative;
+      width: clamp(160px, 45vw, 210px);
+      height: clamp(160px, 45vw, 210px);
+      margin: clamp(1.5rem, 4vw, 2.2rem) auto;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .square {
+      position: absolute;
+      inset: 0;
+      border: 1.5px solid rgba(255, 255, 255, 0.28);
+      border-radius: 4px;
+    }
+
+    .dot {
+      position: absolute;
+      width: 13px;
+      height: 13px;
+      background: white;
+      border-radius: 50%;
+      box-shadow: 0 0 12px rgba(255,255,255,0.9);
+      top: -6.5px;
+      left: -6.5px;
+      offset-path: rect(0% 100% 100% 0% round 4px);
+      will-change: offset-distance;
+    }
+
+    .dot.running {
+      animation: follow calc(var(--duration) * 4) linear infinite;
+    }
+
+    @keyframes follow {
+      from { offset-distance: 0%; }
+      to   { offset-distance: 100%; }
+    }
+
+    .circle {
+      width: clamp(70px, 20vw, 92px);
+      height: clamp(70px, 20vw, 92px);
+      background: rgba(255, 255, 255, 0.25);
+      border-radius: 50%;
+      transition: transform var(--duration) cubic-bezier(0.4, 0, 0.2, 1),
+                  background 1.5s ease;
+      will-change: transform;
+    }
+
+    .circle.hold {
+      background: rgba(26, 35, 126, 0.55);
+    }
+
+    /* Phase label */
+    .phase {
+      font-size: clamp(1rem, 3.5vw, 1.25rem);
+      font-weight: 500;
+      letter-spacing: 0.04em;
+      min-height: 1.6em;
+      margin-bottom: clamp(1.2rem, 3.5vw, 1.8rem);
+    }
+
+    /* Controls */
+    .controls {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    button {
+      background: rgba(255, 255, 255, 0.2);
+      color: white;
+      border: none;
+      padding: 0.9rem 0;
+      width: clamp(160px, 50vw, 220px);
+      border-radius: 18px;
+      font-size: clamp(1rem, 3.5vw, 1.2rem);
+      font-weight: 700;
+      cursor: pointer;
+      transition: background 0.25s, transform 0.1s;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    button:hover  { background: rgba(255, 255, 255, 0.28); }
+    button:active { transform: scale(0.97); }
+
+    .cycles-label {
+      font-size: clamp(0.75rem, 2.5vw, 0.85rem);
+      opacity: 0.55;
+      margin-top: 0.2rem;
+    }
+
+    /* Done state */
+    .done-msg {
+      font-size: clamp(0.9rem, 3vw, 1rem);
+      opacity: 0.75;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Breathe</h1>
+    <p class="subtitle">Box breathing · 4 phases · 5 s each</p>
+
+    <div class="breather">
+      <div class="square"></div>
+      <div class="dot"  id="dot"></div>
+      <div class="circle" id="circle"></div>
+    </div>
+
+    <div class="phase" id="phase">Ready</div>
+
+    <div class="controls">
+      <button id="btn">Start</button>
+      <div class="cycles-label" id="cycles-label"></div>
+    </div>
+  </div>
+
+  <script>
+    const PHASE_MS   = 5000;
+    const TOTAL_CYCLES = 4;
+
+    const body   = document.body;
+    const dot    = document.getElementById('dot');
+    const circle = document.getElementById('circle');
+    const phase  = document.getElementById('phase');
+    const btn    = document.getElementById('btn');
+    const label  = document.getElementById('cycles-label');
+
+    let running = false;
+    let timeouts = [];
+
+    function clear() {
+      timeouts.forEach(clearTimeout);
+      timeouts = [];
+    }
+
+    function after(ms, fn) {
+      timeouts.push(setTimeout(fn, ms));
+    }
+
+    function setPhase(text, isHold) {
+      phase.textContent = text;
+      body.classList.toggle('hold', isHold);
+      circle.classList.toggle('hold', isHold);
+    }
+
+    function runCycle(n) {
+      if (n > TOTAL_CYCLES) {
+        finish();
+        return;
+      }
+
+      label.textContent = `Cycle ${n} of ${TOTAL_CYCLES}`;
+
+      // Inhale
+      setPhase('Breathe In', false);
+      circle.style.transform = 'scale(2.15)';
+
+      after(PHASE_MS, () => {
+        // Hold after inhale
+        setPhase('Hold', true);
+
+        after(PHASE_MS, () => {
+          // Exhale
+          setPhase('Breathe Out', false);
+          circle.style.transform = 'scale(1)';
+
+          after(PHASE_MS, () => {
+            // Hold after exhale
+            setPhase('Hold', true);
+
+            after(PHASE_MS, () => runCycle(n + 1));
+          });
+        });
+      });
+    }
+
+    function start() {
+      running = true;
+      btn.textContent = 'Stop';
+      dot.classList.add('running');
+      runCycle(1);
+    }
+
+    function stop() {
+      running = false;
+      clear();
+      dot.classList.remove('running');
+      circle.style.transform = 'scale(1)';
+      setPhase('Ready', false);
+      label.textContent = '';
+      btn.textContent = 'Start';
+    }
+
+    function finish() {
+      running = false;
+      dot.classList.remove('running');
+      circle.style.transform = 'scale(1)';
+      setPhase('Well done ♥', false);
+      label.textContent = `${TOTAL_CYCLES} cycles complete`;
+      btn.textContent = 'Again';
+    }
+
+    btn.addEventListener('click', () => {
+      if (running) {
+        stop();
+      } else {
+        stop(); // reset state cleanly
+        start();
+      }
+    });
+  </script>
+</body>
+</html>
