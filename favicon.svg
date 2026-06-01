@@ -1,37 +1,37 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <!-- Blue rounded-square background -->
+  <!-- Indigo rounded-square background -->
   <rect width="32" height="32" rx="7" fill="#3f51b5"/>
 
   <!--
-    Nautilus spiral: 7 consecutive semicircular arcs of growing radius,
-    all drawn counterclockwise (sweep=0).
+    Lotus flower — 5 petals fanning from a shared base at (16, 26).
 
-    Endpoints along y=17:  17 → 15.5 → 18 → 14.5 → 20 → 11 → 26 → 3
-    Arc centres (midpoints): 16.25  16.75  16.25  17.25  15.5  18.5  14.5
-    Radii:                    0.75   1.25   1.75   2.75   4.5   7.5  11.5
+    Petal local path (base at origin, pointing straight up 18 px):
+      M 0 0  C -4 -7  -3 -15  0 -18  C  3 -15  4 -7  0 0
 
-    • Start on the right of its arc centre  → sweep=0 → goes UP   (odd arcs)
-    • Start on the left  of its arc centre  → sweep=0 → goes DOWN (even arcs)
-    Alternating upper/lower arcs form the counterclockwise spiral.
-
-    Tail curve: shell opening sweeping from (3,17) down to (7,28).
+    Each petal uses:  transform="translate(16,26) rotate(angle)"
+    Outer petals are scaled to 80 % height so they sit lower & wider,
+    matching a real lotus silhouette.
+    Drawn back → front so the centre petal is always on top.
   -->
-  <path
-    fill="none"
-    stroke="white"
-    stroke-width="1.5"
-    stroke-linecap="round"
-    d="M 17 17
-       A  0.75  0.75 0 0 0 15.5 17
-       A  1.25  1.25 0 0 0 18   17
-       A  1.75  1.75 0 0 0 14.5 17
-       A  2.75  2.75 0 0 0 20   17
-       A  4.5   4.5  0 0 0 11   17
-       A  7.5   7.5  0 0 0 26   17
-       A 11.5  11.5  0 0 0  3   17
-       C 2 22 3 26 7 28"
-  />
 
-  <!-- Spiral eye -->
-  <circle cx="17" cy="17" r="1.3" fill="white"/>
+  <!-- Outer petals  (behind, 80 % height, 40 % opacity) -->
+  <path fill="rgba(255,255,255,0.40)"
+        transform="translate(16,26) rotate(-55) scale(1,0.8)"
+        d="M0 0C-4-7-3-15 0-18C3-15 4-7 0 0"/>
+  <path fill="rgba(255,255,255,0.40)"
+        transform="translate(16,26) rotate(55) scale(1,0.8)"
+        d="M0 0C-4-7-3-15 0-18C3-15 4-7 0 0"/>
+
+  <!-- Inner side petals  (68 % opacity) -->
+  <path fill="rgba(255,255,255,0.68)"
+        transform="translate(16,26) rotate(-27)"
+        d="M0 0C-4-7-3-15 0-18C3-15 4-7 0 0"/>
+  <path fill="rgba(255,255,255,0.68)"
+        transform="translate(16,26) rotate(27)"
+        d="M0 0C-4-7-3-15 0-18C3-15 4-7 0 0"/>
+
+  <!-- Centre petal  (full white, on top) -->
+  <path fill="white"
+        transform="translate(16,26)"
+        d="M0 0C-4-7-3-15 0-18C3-15 4-7 0 0"/>
 </svg>
