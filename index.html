@@ -197,34 +197,26 @@
       min-height: 1.2em;
     }
 
-    /* ── Floating play / stop button ───────────────────────────────────── */
-    #btn {
-      position: fixed;
-      bottom: max(env(safe-area-inset-bottom) + 1.2rem, 1.8rem);
-      right:  max(env(safe-area-inset-right)  + 1.2rem, 1.8rem);
-      width:  54px;
-      height: 54px;
-      border-radius: 50%;
-      background: rgba(255, 255, 255, 0.22);
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
-      border: 1px solid rgba(255, 255, 255, 0.28);
-      color: white;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
-      transition: background 0.25s, transform 0.12s;
+    /* ── Breather is the tap target ────────────────────────────────────── */
+    .breather {
+      /* already defined above — extend with interaction styles */
       -webkit-tap-highlight-color: transparent;
-      z-index: 10;
     }
-    #btn:hover  { background: rgba(255, 255, 255, 0.32); }
-    #btn:active { transform: scale(0.91); }
 
-    /* Show play by default, stop when running */
-    #btn .icon-stop { display: none; }
-    #btn.running .icon-play { display: none; }
-    #btn.running .icon-stop { display: flex; }
+    /* Desktop: pointer cursor + subtle reveal on hover */
+    @media (hover: hover) {
+      .breather { cursor: pointer; }
+      .breather:hover .square {
+        border-color: rgba(255, 255, 255, 0.55);
+        transition: border-color 0.3s ease;
+      }
+      .breather:hover .circle:not(.hold) {
+        background: rgba(255, 255, 255, 0.35);
+      }
+    }
+
+    /* Press feedback on both mobile and desktop */
+    .breather:active .circle { opacity: 0.7; }
 
     /* ── Compact landscape phones ──────────────────────────────────────── */
     @media (orientation: landscape) and (max-height: 500px) {
@@ -243,7 +235,7 @@
       <p class="subtitle">Box breathing · 4 phases · 5 s each</p>
     </div></div>
 
-    <div class="breather">
+    <div class="breather" id="breather" role="button" tabindex="0" aria-label="Start breathing">
       <div class="square"></div>
       <div class="dot"  id="dot"></div>
       <div class="circle" id="circle"></div>
@@ -253,29 +245,17 @@
     <div class="cycles-label" id="cycles-label"></div>
   </div>
 
-  <!-- Floating icon button — lives outside the card so it stays fixed -->
-  <button id="btn" aria-label="Start">
-    <!-- Play triangle -->
-    <svg class="icon-play" viewBox="0 0 24 24" fill="currentColor" width="22" height="22" aria-hidden="true">
-      <path d="M8 5.14v14l11-7-11-7z"/>
-    </svg>
-    <!-- Stop square -->
-    <svg class="icon-stop" viewBox="0 0 24 24" fill="currentColor" width="18" height="18" aria-hidden="true">
-      <rect x="5" y="5" width="14" height="14" rx="2.5"/>
-    </svg>
-  </button>
-
   <script>
     const PHASE_MS     = 5000;
     const TOTAL_CYCLES = 4;
 
-    const htmlEl = document.documentElement;
-    const card   = document.querySelector('.card');
-    const dot    = document.getElementById('dot');
-    const circle = document.getElementById('circle');
-    const phase  = document.getElementById('phase');
-    const btn    = document.getElementById('btn');
-    const label  = document.getElementById('cycles-label');
+    const htmlEl   = document.documentElement;
+    const card     = document.querySelector('.card');
+    const breather = document.getElementById('breather');
+    const dot      = document.getElementById('dot');
+    const circle   = document.getElementById('circle');
+    const phase    = document.getElementById('phase');
+    const label    = document.getElementById('cycles-label');
 
     let running  = false;
     let timeouts = [];
@@ -291,12 +271,9 @@
 
     function runCycle(n) {
       if (n > TOTAL_CYCLES) { finish(); return; }
-
       label.textContent = `Cycle ${n} of ${TOTAL_CYCLES}`;
-
       setPhase('Breathe in', false);
       circle.style.transform = 'scale(2.15)';
-
       after(PHASE_MS, () => {
         setPhase('Hold', true);
         after(PHASE_MS, () => {
@@ -312,8 +289,7 @@
 
     function start() {
       running = true;
-      btn.classList.add('running');
-      btn.setAttribute('aria-label', 'Stop');
+      breather.setAttribute('aria-label', 'Stop breathing');
       card.classList.add('running');
       dot.classList.add('running');
       runCycle(1);
@@ -322,8 +298,7 @@
     function stop() {
       running = false;
       clear();
-      btn.classList.remove('running');
-      btn.setAttribute('aria-label', 'Start');
+      breather.setAttribute('aria-label', 'Start breathing');
       card.classList.remove('running');
       dot.classList.remove('running');
       circle.style.transform = 'scale(1)';
@@ -333,8 +308,7 @@
 
     function finish() {
       running = false;
-      btn.classList.remove('running');
-      btn.setAttribute('aria-label', 'Start again');
+      breather.setAttribute('aria-label', 'Start again');
       card.classList.remove('running');
       dot.classList.remove('running');
       circle.style.transform = 'scale(1)';
@@ -342,7 +316,16 @@
       label.textContent = `${TOTAL_CYCLES} cycles complete`;
     }
 
-    btn.addEventListener('click', () => running ? stop() : (stop(), start()));
+    // Click / tap anywhere on the breather to start or stop
+    breather.addEventListener('click', () => running ? stop() : (stop(), start()));
+
+    // Keyboard support (Space / Enter) for accessibility
+    breather.addEventListener('keydown', e => {
+      if (e.key === ' ' || e.key === 'Enter') {
+        e.preventDefault();
+        running ? stop() : (stop(), start());
+      }
+    });
   </script>
 </body>
 </html>
