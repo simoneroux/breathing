@@ -22,72 +22,95 @@
       --duration: 5s;
     }
 
-    /* html carries the gradient so no white flash behind body on iOS */
+    /* html carries the gradient — no white flash in safe-area on iOS */
     html {
       height: 100%;
       background: linear-gradient(135deg, var(--bg-a), var(--bg-b));
+      transition: background 1.5s ease-in-out;
     }
+    html.hold { background: linear-gradient(135deg, var(--hold-a), var(--hold-b)); }
 
     body {
-      /* dvh = dynamic viewport height: shrinks/grows with iOS chrome */
       min-height: 100dvh;
-      min-height: -webkit-fill-available; /* older iOS fallback */
-      overflow: hidden;
+      min-height: -webkit-fill-available;
+      /* allow scroll on small landscape phones without cutting content */
+      overflow-x: hidden;
+      overflow-y: auto;
+      scrollbar-width: none;
       touch-action: manipulation;
       display: flex;
+      flex-direction: column;
       align-items: center;
       justify-content: center;
-      /* push card above the home-indicator safe area */
-      padding-bottom: env(safe-area-inset-bottom);
+      padding: clamp(1.5rem, 4vh, 3rem) 1.5rem;
+      padding-bottom: max(env(safe-area-inset-bottom), clamp(1.5rem, 4vh, 3rem));
       background: linear-gradient(135deg, var(--bg-a), var(--bg-b));
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       color: white;
       transition: background 1.5s ease-in-out;
     }
+    body::-webkit-scrollbar { display: none; }
+    body.hold { background: linear-gradient(135deg, var(--hold-a), var(--hold-b)); }
 
-    body.hold {
-      background: linear-gradient(135deg, var(--hold-a), var(--hold-b));
-    }
-
-    /* html also transitions on hold so the safe-area region matches */
-    html { transition: background 1.5s ease-in-out; }
-    html.hold { background: linear-gradient(135deg, var(--hold-a), var(--hold-b)); }
-
-    /* Card */
+    /* ── Card ──────────────────────────────────────────────────────────────
+       Mobile: glass pill that contains everything.
+       Desktop (≥ 640 px): card shell dissolves — the viz expands freely.   */
     .card {
-      padding: clamp(2rem, 6vw, 3.5rem) clamp(1.5rem, 5vw, 3rem);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: clamp(0.9rem, 2.5vw, 1.5rem);
+      padding: clamp(2rem, 5vw, 3rem) clamp(1.5rem, 4vw, 2.5rem);
       border-radius: 32px;
       background: rgba(255, 255, 255, 0.12);
       backdrop-filter: blur(20px);
       -webkit-backdrop-filter: blur(20px);
       border: 1px solid rgba(255, 255, 255, 0.15);
       box-shadow: 0 24px 60px rgba(0, 0, 0, 0.18);
-      width: min(460px, 92vw);
+      width: min(440px, 92vw);
       text-align: center;
       user-select: none;
     }
 
+    @media (min-width: 640px) {
+      .card {
+        background: none;
+        border: none;
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+        box-shadow: none;
+        padding: 0;
+        width: auto;
+        gap: clamp(1.4rem, 3vh, 2.5rem);
+      }
+    }
+
+    /* ── Typography ────────────────────────────────────────────────────── */
     h1 {
-      font-size: clamp(1.6rem, 5vw, 2.2rem);
+      font-size: clamp(1.8rem, 4vw, 3rem);
       font-weight: 700;
       letter-spacing: -0.02em;
     }
 
     .subtitle {
-      margin-top: 0.35rem;
-      font-size: clamp(0.9rem, 3vw, 1.1rem);
-      opacity: 0.7;
+      font-size: clamp(0.85rem, 1.8vw, 1.05rem);
+      opacity: 0.65;
     }
 
-    /* Box breathing visual */
+    /* ── Breathing visual ──────────────────────────────────────────────────
+       55 vmin means: ~500 px on a 13" laptop (900 px tall),
+       ~260 px on a phone held portrait (min-clamp kicks in for tiny screens).
+       The circle and dot are sized as % of the breather so ratios
+       stay identical at every viewport size.                                */
     .breather {
       position: relative;
-      width: clamp(160px, 45vw, 210px);
-      height: clamp(160px, 45vw, 210px);
-      margin: clamp(1.5rem, 4vw, 2.2rem) auto;
+      width:  clamp(260px, 55vmin, 520px);
+      height: clamp(260px, 55vmin, 520px);
       display: flex;
       align-items: center;
       justify-content: center;
+      /* give the expanding circle room to breathe without clipping */
+      overflow: visible;
     }
 
     .square {
@@ -97,15 +120,17 @@
       border-radius: 4px;
     }
 
+    /* Dot scales with vmin so it stays crisp on every screen size */
     .dot {
+      --ds: clamp(11px, 2.2vmin, 18px);
       position: absolute;
-      width: 13px;
-      height: 13px;
+      width:  var(--ds);
+      height: var(--ds);
       background: white;
       border-radius: 50%;
-      box-shadow: 0 0 12px rgba(255,255,255,0.9);
-      top: -6.5px;
-      left: -6.5px;
+      box-shadow: 0 0 12px rgba(255, 255, 255, 0.9);
+      top:  calc(var(--ds) / -2);
+      left: calc(var(--ds) / -2);
       offset-path: rect(0% 100% 100% 0% round 4px);
       will-change: offset-distance;
     }
@@ -115,39 +140,39 @@
     }
 
     @keyframes follow {
-      from { offset-distance: 0%; }
+      from { offset-distance:   0%; }
       to   { offset-distance: 100%; }
     }
 
+    /* Circle is 44 % of the breather — proportional at every size.
+       scale(2.15) on inhale takes it to ~94 % of the box (same visual
+       ratio as the original design at 210 px).                             */
     .circle {
-      width: clamp(70px, 20vw, 92px);
-      height: clamp(70px, 20vw, 92px);
+      width:  44%;
+      height: 44%;
       background: rgba(255, 255, 255, 0.25);
       border-radius: 50%;
       transition: transform var(--duration) cubic-bezier(0.4, 0, 0.2, 1),
                   background 1.5s ease;
       will-change: transform;
     }
+    .circle.hold { background: rgba(26, 35, 126, 0.55); }
 
-    .circle.hold {
-      background: rgba(26, 35, 126, 0.55);
-    }
-
-    /* Phase label */
+    /* ── Phase label ───────────────────────────────────────────────────── */
     .phase {
-      font-size: clamp(1rem, 3.5vw, 1.25rem);
+      font-size: clamp(1rem, 2.8vw, 1.5rem);
       font-weight: 500;
-      letter-spacing: 0.04em;
+      letter-spacing: 0.06em;
       min-height: 1.6em;
-      margin-bottom: clamp(1.2rem, 3.5vw, 1.8rem);
+      text-transform: uppercase;
     }
 
-    /* Controls */
+    /* ── Controls ──────────────────────────────────────────────────────── */
     .controls {
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 0.75rem;
+      gap: 0.6rem;
     }
 
     button {
@@ -155,29 +180,29 @@
       color: white;
       border: none;
       padding: 0.9rem 0;
-      width: clamp(160px, 50vw, 220px);
+      width: clamp(180px, 20vw, 260px);
       border-radius: 18px;
-      font-size: clamp(1rem, 3.5vw, 1.2rem);
+      font-size: clamp(1rem, 1.8vw, 1.15rem);
       font-weight: 700;
       cursor: pointer;
       transition: background 0.25s, transform 0.1s;
       -webkit-tap-highlight-color: transparent;
     }
-
     button:hover  { background: rgba(255, 255, 255, 0.28); }
     button:active { transform: scale(0.97); }
 
     .cycles-label {
-      font-size: clamp(0.75rem, 2.5vw, 0.85rem);
-      opacity: 0.55;
-      margin-top: 0.2rem;
+      font-size: clamp(0.75rem, 1.5vw, 0.85rem);
+      opacity: 0.5;
     }
 
-    /* Done state */
-    .done-msg {
-      font-size: clamp(0.9rem, 3vw, 1rem);
-      opacity: 0.75;
-      line-height: 1.5;
+    /* ── Compact layout for landscape phones (e.g. iPhone SE landscape) ── */
+    @media (orientation: landscape) and (max-height: 500px) {
+      .card { gap: 0.5rem; }
+      .breather {
+        width:  clamp(140px, 62vh, 300px);
+        height: clamp(140px, 62vh, 300px);
+      }
     }
   </style>
 </head>
@@ -201,7 +226,7 @@
   </div>
 
   <script>
-    const PHASE_MS   = 5000;
+    const PHASE_MS     = 5000;
     const TOTAL_CYCLES = 4;
 
     const body   = document.body;
@@ -211,17 +236,12 @@
     const btn    = document.getElementById('btn');
     const label  = document.getElementById('cycles-label');
 
-    let running = false;
+    let running  = false;
     let timeouts = [];
 
-    function clear() {
-      timeouts.forEach(clearTimeout);
-      timeouts = [];
-    }
+    function clear() { timeouts.forEach(clearTimeout); timeouts = []; }
 
-    function after(ms, fn) {
-      timeouts.push(setTimeout(fn, ms));
-    }
+    function after(ms, fn) { timeouts.push(setTimeout(fn, ms)); }
 
     function setPhase(text, isHold) {
       phase.textContent = text;
@@ -231,30 +251,20 @@
     }
 
     function runCycle(n) {
-      if (n > TOTAL_CYCLES) {
-        finish();
-        return;
-      }
+      if (n > TOTAL_CYCLES) { finish(); return; }
 
       label.textContent = `Cycle ${n} of ${TOTAL_CYCLES}`;
 
-      // Inhale
       setPhase('Breathe In', false);
       circle.style.transform = 'scale(2.15)';
 
       after(PHASE_MS, () => {
-        // Hold after inhale
         setPhase('Hold', true);
-
         after(PHASE_MS, () => {
-          // Exhale
           setPhase('Breathe Out', false);
           circle.style.transform = 'scale(1)';
-
           after(PHASE_MS, () => {
-            // Hold after exhale
             setPhase('Hold', true);
-
             after(PHASE_MS, () => runCycle(n + 1));
           });
         });
@@ -287,14 +297,7 @@
       btn.textContent = 'Again';
     }
 
-    btn.addEventListener('click', () => {
-      if (running) {
-        stop();
-      } else {
-        stop(); // reset state cleanly
-        start();
-      }
-    });
+    btn.addEventListener('click', () => running ? stop() : (stop(), start()));
   </script>
 </body>
 </html>
