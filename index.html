@@ -48,12 +48,13 @@
     }
 
     /* ── Card ──────────────────────────────────────────────────────────────
-       Mobile: glass pill. Desktop (≥ 640 px): dissolves, viz expands.      */
+       gap:0 here — spacing is handled by margins on each child so the
+       header gap can be animated to zero alongside the height collapse.     */
     .card {
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: clamp(0.9rem, 2.5vw, 1.5rem);
+      gap: 0;
       padding: clamp(2rem, 5vw, 3rem) clamp(1.5rem, 4vw, 2.5rem);
       border-radius: 32px;
       background: rgba(255, 255, 255, 0.12);
@@ -75,8 +76,41 @@
         box-shadow: none;
         padding: 0;
         width: auto;
-        gap: clamp(1.4rem, 3vh, 2.5rem);
       }
+    }
+
+    /* ── Header — collapses cleanly when breathing starts ──────────────────
+       grid-template-rows: 1fr → 0fr is the only CSS technique that
+       animates height from "exactly the content height" to zero, with no
+       max-height approximation artefacts. margin-bottom is animated in
+       sync so the flex gap below also disappears.                           */
+    .header {
+      display: grid;
+      grid-template-rows: 1fr;
+      overflow: hidden;
+      width: 100%;
+      margin-bottom: clamp(0.9rem, 2.5vw, 1.5rem);
+      opacity: 1;
+      transition: grid-template-rows 0.65s ease,
+                  margin-bottom      0.65s ease,
+                  opacity            0.55s ease;
+    }
+    .header > div {
+      min-height: 0;          /* required: lets the row shrink below content */
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.35rem;
+    }
+    @media (min-width: 640px) {
+      .header { margin-bottom: clamp(1.4rem, 3vh, 2.5rem); }
+    }
+
+    /* When running: collapse height + gap, fade out */
+    .card.running .header {
+      grid-template-rows: 0fr;
+      margin-bottom: 0;
+      opacity: 0;
     }
 
     /* ── Typography ────────────────────────────────────────────────────── */
@@ -84,20 +118,11 @@
       font-size: clamp(1.8rem, 4vw, 3rem);
       font-weight: 700;
       letter-spacing: -0.02em;
-      transition: opacity 0.7s ease;
     }
 
     .subtitle {
       font-size: clamp(0.85rem, 1.8vw, 1.05rem);
       opacity: 0.65;
-      transition: opacity 0.7s ease;
-    }
-
-    /* Fade out title + subtitle while breathing — keep focus on the visual */
-    .card.running h1,
-    .card.running .subtitle {
-      opacity: 0;
-      pointer-events: none;
     }
 
     /* ── Breathing visual ─────────────────────────────────────────────── */
@@ -109,6 +134,10 @@
       align-items: center;
       justify-content: center;
       overflow: visible;
+      margin-bottom: clamp(0.9rem, 2.5vw, 1.5rem);
+    }
+    @media (min-width: 640px) {
+      .breather { margin-bottom: clamp(1.4rem, 3vh, 2.5rem); }
     }
 
     .square {
@@ -156,8 +185,9 @@
     .phase {
       font-size: clamp(1rem, 2.8vw, 1.5rem);
       font-weight: 500;
-      letter-spacing: 0.02em;   /* subtle — no ALL CAPS */
+      letter-spacing: 0.02em;
       min-height: 1.6em;
+      margin-bottom: 0.4rem;
     }
 
     /* ── Cycles counter ────────────────────────────────────────────────── */
@@ -208,8 +238,10 @@
 </head>
 <body>
   <div class="card">
-    <h1>Breathe</h1>
-    <p class="subtitle">Box breathing · 4 phases · 5 s each</p>
+    <div class="header"><div>
+      <h1>Breathe</h1>
+      <p class="subtitle">Box breathing · 4 phases · 5 s each</p>
+    </div></div>
 
     <div class="breather">
       <div class="square"></div>
