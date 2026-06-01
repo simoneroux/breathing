@@ -8,7 +8,6 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#3f51b5">
   <title>Breathe</title>
-  <!-- Favicon & homescreen icon -->
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
   <style>
@@ -22,15 +21,9 @@
       --duration: 5s;
     }
 
-    /* ONE gradient lives here, on html, and nowhere else.
-       Because html's bounding box covers the entire screen (incl. safe-areas
-       with viewport-fit=cover) the gradient origin is always the physical
-       top-left corner. A second gradient on body would start from a different
-       origin and create a visible seam — so body is transparent.
-       overflow:hidden + overscroll-behavior:none kill the iOS rubber-band
-       that used to expose white below the gradient.                         */
+    /* Single gradient on html — body is transparent so there's no seam */
     html {
-      min-height: 100%;                 /* at least the full viewport */
+      min-height: 100%;
       background: linear-gradient(135deg, var(--bg-a), var(--bg-b));
       transition: background 1.5s ease-in-out;
       overflow: hidden;
@@ -49,14 +42,13 @@
       justify-content: center;
       padding: clamp(1.5rem, 4vh, 3rem) 1.5rem;
       padding-bottom: max(env(safe-area-inset-bottom), clamp(1.5rem, 4vh, 3rem));
-      background: transparent;          /* show html's gradient through — no duplicate */
+      background: transparent;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       color: white;
     }
 
     /* ── Card ──────────────────────────────────────────────────────────────
-       Mobile: glass pill that contains everything.
-       Desktop (≥ 640 px): card shell dissolves — the viz expands freely.   */
+       Mobile: glass pill. Desktop (≥ 640 px): dissolves, viz expands.      */
     .card {
       display: flex;
       flex-direction: column;
@@ -92,18 +84,23 @@
       font-size: clamp(1.8rem, 4vw, 3rem);
       font-weight: 700;
       letter-spacing: -0.02em;
+      transition: opacity 0.7s ease;
     }
 
     .subtitle {
       font-size: clamp(0.85rem, 1.8vw, 1.05rem);
       opacity: 0.65;
+      transition: opacity 0.7s ease;
     }
 
-    /* ── Breathing visual ──────────────────────────────────────────────────
-       55 vmin means: ~500 px on a 13" laptop (900 px tall),
-       ~260 px on a phone held portrait (min-clamp kicks in for tiny screens).
-       The circle and dot are sized as % of the breather so ratios
-       stay identical at every viewport size.                                */
+    /* Fade out title + subtitle while breathing — keep focus on the visual */
+    .card.running h1,
+    .card.running .subtitle {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    /* ── Breathing visual ─────────────────────────────────────────────── */
     .breather {
       position: relative;
       width:  clamp(260px, 55vmin, 520px);
@@ -111,7 +108,6 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      /* give the expanding circle room to breathe without clipping */
       overflow: visible;
     }
 
@@ -122,7 +118,6 @@
       border-radius: 4px;
     }
 
-    /* Dot scales with vmin so it stays crisp on every screen size */
     .dot {
       --ds: clamp(11px, 2.2vmin, 18px);
       position: absolute;
@@ -146,9 +141,6 @@
       to   { offset-distance: 100%; }
     }
 
-    /* Circle is 44 % of the breather — proportional at every size.
-       scale(2.15) on inhale takes it to ~94 % of the box (same visual
-       ratio as the original design at 210 px).                             */
     .circle {
       width:  44%;
       height: 44%;
@@ -164,41 +156,47 @@
     .phase {
       font-size: clamp(1rem, 2.8vw, 1.5rem);
       font-weight: 500;
-      letter-spacing: 0.06em;
+      letter-spacing: 0.02em;   /* subtle — no ALL CAPS */
       min-height: 1.6em;
-      text-transform: uppercase;
     }
 
-    /* ── Controls ──────────────────────────────────────────────────────── */
-    .controls {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 0.6rem;
-    }
-
-    button {
-      background: rgba(255, 255, 255, 0.2);
-      color: white;
-      border: none;
-      padding: 0.9rem 0;
-      width: clamp(180px, 20vw, 260px);
-      border-radius: 18px;
-      font-size: clamp(1rem, 1.8vw, 1.15rem);
-      font-weight: 700;
-      cursor: pointer;
-      transition: background 0.25s, transform 0.1s;
-      -webkit-tap-highlight-color: transparent;
-    }
-    button:hover  { background: rgba(255, 255, 255, 0.28); }
-    button:active { transform: scale(0.97); }
-
+    /* ── Cycles counter ────────────────────────────────────────────────── */
     .cycles-label {
       font-size: clamp(0.75rem, 1.5vw, 0.85rem);
       opacity: 0.5;
+      min-height: 1.2em;
     }
 
-    /* ── Compact layout for landscape phones (e.g. iPhone SE landscape) ── */
+    /* ── Floating play / stop button ───────────────────────────────────── */
+    #btn {
+      position: fixed;
+      bottom: max(env(safe-area-inset-bottom) + 1.2rem, 1.8rem);
+      right:  max(env(safe-area-inset-right)  + 1.2rem, 1.8rem);
+      width:  54px;
+      height: 54px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.22);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.28);
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.25s, transform 0.12s;
+      -webkit-tap-highlight-color: transparent;
+      z-index: 10;
+    }
+    #btn:hover  { background: rgba(255, 255, 255, 0.32); }
+    #btn:active { transform: scale(0.91); }
+
+    /* Show play by default, stop when running */
+    #btn .icon-stop { display: none; }
+    #btn.running .icon-play { display: none; }
+    #btn.running .icon-stop { display: flex; }
+
+    /* ── Compact landscape phones ──────────────────────────────────────── */
     @media (orientation: landscape) and (max-height: 500px) {
       .card { gap: 0.5rem; }
       .breather {
@@ -220,18 +218,27 @@
     </div>
 
     <div class="phase" id="phase">Ready</div>
-
-    <div class="controls">
-      <button id="btn">Start</button>
-      <div class="cycles-label" id="cycles-label"></div>
-    </div>
+    <div class="cycles-label" id="cycles-label"></div>
   </div>
+
+  <!-- Floating icon button — lives outside the card so it stays fixed -->
+  <button id="btn" aria-label="Start">
+    <!-- Play triangle -->
+    <svg class="icon-play" viewBox="0 0 24 24" fill="currentColor" width="22" height="22" aria-hidden="true">
+      <path d="M8 5.14v14l11-7-11-7z"/>
+    </svg>
+    <!-- Stop square -->
+    <svg class="icon-stop" viewBox="0 0 24 24" fill="currentColor" width="18" height="18" aria-hidden="true">
+      <rect x="5" y="5" width="14" height="14" rx="2.5"/>
+    </svg>
+  </button>
 
   <script>
     const PHASE_MS     = 5000;
     const TOTAL_CYCLES = 4;
 
-    const body   = document.body;
+    const htmlEl = document.documentElement;
+    const card   = document.querySelector('.card');
     const dot    = document.getElementById('dot');
     const circle = document.getElementById('circle');
     const phase  = document.getElementById('phase');
@@ -242,13 +249,11 @@
     let timeouts = [];
 
     function clear() { timeouts.forEach(clearTimeout); timeouts = []; }
-
     function after(ms, fn) { timeouts.push(setTimeout(fn, ms)); }
 
     function setPhase(text, isHold) {
       phase.textContent = text;
-      body.classList.toggle('hold', isHold);
-      document.documentElement.classList.toggle('hold', isHold);
+      htmlEl.classList.toggle('hold', isHold);
       circle.classList.toggle('hold', isHold);
     }
 
@@ -257,13 +262,13 @@
 
       label.textContent = `Cycle ${n} of ${TOTAL_CYCLES}`;
 
-      setPhase('Breathe In', false);
+      setPhase('Breathe in', false);
       circle.style.transform = 'scale(2.15)';
 
       after(PHASE_MS, () => {
         setPhase('Hold', true);
         after(PHASE_MS, () => {
-          setPhase('Breathe Out', false);
+          setPhase('Breathe out', false);
           circle.style.transform = 'scale(1)';
           after(PHASE_MS, () => {
             setPhase('Hold', true);
@@ -275,7 +280,9 @@
 
     function start() {
       running = true;
-      btn.textContent = 'Stop';
+      btn.classList.add('running');
+      btn.setAttribute('aria-label', 'Stop');
+      card.classList.add('running');
       dot.classList.add('running');
       runCycle(1);
     }
@@ -283,20 +290,24 @@
     function stop() {
       running = false;
       clear();
+      btn.classList.remove('running');
+      btn.setAttribute('aria-label', 'Start');
+      card.classList.remove('running');
       dot.classList.remove('running');
       circle.style.transform = 'scale(1)';
       setPhase('Ready', false);
       label.textContent = '';
-      btn.textContent = 'Start';
     }
 
     function finish() {
       running = false;
+      btn.classList.remove('running');
+      btn.setAttribute('aria-label', 'Start again');
+      card.classList.remove('running');
       dot.classList.remove('running');
       circle.style.transform = 'scale(1)';
       setPhase('Well done ♥', false);
       label.textContent = `${TOTAL_CYCLES} cycles complete`;
-      btn.textContent = 'Again';
     }
 
     btn.addEventListener('click', () => running ? stop() : (stop(), start()));
