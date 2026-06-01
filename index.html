@@ -22,21 +22,23 @@
       --duration: 5s;
     }
 
-    /* html carries the gradient — no white flash in safe-area on iOS */
+    /* html carries the gradient — covers the ENTIRE screen including safe-areas.
+       overflow:hidden + overscroll-behavior:none together kill the iOS
+       rubber-band bounce that used to reveal a white document background.   */
     html {
       height: 100%;
+      min-height: -webkit-fill-available;
       background: linear-gradient(135deg, var(--bg-a), var(--bg-b));
       transition: background 1.5s ease-in-out;
+      overflow: hidden;             /* lock elastic scroll at the root */
     }
     html.hold { background: linear-gradient(135deg, var(--hold-a), var(--hold-b)); }
 
     body {
       min-height: 100dvh;
       min-height: -webkit-fill-available;
-      /* allow scroll on small landscape phones without cutting content */
-      overflow-x: hidden;
-      overflow-y: auto;
-      scrollbar-width: none;
+      overflow: hidden;             /* no scroll, no bounce */
+      overscroll-behavior: none;    /* belt-and-suspenders: kills iOS rubber-band */
       touch-action: manipulation;
       display: flex;
       flex-direction: column;
@@ -49,7 +51,6 @@
       color: white;
       transition: background 1.5s ease-in-out;
     }
-    body::-webkit-scrollbar { display: none; }
     body.hold { background: linear-gradient(135deg, var(--hold-a), var(--hold-b)); }
 
     /* ── Card ──────────────────────────────────────────────────────────────
