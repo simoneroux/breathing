@@ -22,23 +22,26 @@
       --duration: 5s;
     }
 
-    /* html carries the gradient — covers the ENTIRE screen including safe-areas.
-       overflow:hidden + overscroll-behavior:none together kill the iOS
-       rubber-band bounce that used to reveal a white document background.   */
+    /* ONE gradient lives here, on html, and nowhere else.
+       Because html's bounding box covers the entire screen (incl. safe-areas
+       with viewport-fit=cover) the gradient origin is always the physical
+       top-left corner. A second gradient on body would start from a different
+       origin and create a visible seam — so body is transparent.
+       overflow:hidden + overscroll-behavior:none kill the iOS rubber-band
+       that used to expose white below the gradient.                         */
     html {
-      height: 100%;
-      min-height: -webkit-fill-available;
+      min-height: 100%;                 /* at least the full viewport */
       background: linear-gradient(135deg, var(--bg-a), var(--bg-b));
       transition: background 1.5s ease-in-out;
-      overflow: hidden;             /* lock elastic scroll at the root */
+      overflow: hidden;
     }
     html.hold { background: linear-gradient(135deg, var(--hold-a), var(--hold-b)); }
 
     body {
       min-height: 100dvh;
       min-height: -webkit-fill-available;
-      overflow: hidden;             /* no scroll, no bounce */
-      overscroll-behavior: none;    /* belt-and-suspenders: kills iOS rubber-band */
+      overflow: hidden;
+      overscroll-behavior: none;
       touch-action: manipulation;
       display: flex;
       flex-direction: column;
@@ -46,12 +49,10 @@
       justify-content: center;
       padding: clamp(1.5rem, 4vh, 3rem) 1.5rem;
       padding-bottom: max(env(safe-area-inset-bottom), clamp(1.5rem, 4vh, 3rem));
-      background: linear-gradient(135deg, var(--bg-a), var(--bg-b));
+      background: transparent;          /* show html's gradient through — no duplicate */
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       color: white;
-      transition: background 1.5s ease-in-out;
     }
-    body.hold { background: linear-gradient(135deg, var(--hold-a), var(--hold-b)); }
 
     /* ── Card ──────────────────────────────────────────────────────────────
        Mobile: glass pill that contains everything.
