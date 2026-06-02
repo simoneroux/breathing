@@ -198,14 +198,37 @@
     }
 
     /* ── Breather is the tap target ────────────────────────────────────── */
-    .breather {
-      /* already defined above — extend with interaction styles */
-      -webkit-tap-highlight-color: transparent;
+    .breather { -webkit-tap-highlight-color: transparent; }
+
+    /* ── In-circle icons ───────────────────────────────────────────────── */
+    .breather-icon {
+      position: absolute;
+      pointer-events: none;
+      transition: opacity 0.35s ease;
     }
 
-    /* Desktop: pointer cursor + subtle reveal on hover */
+    /* Play — visible at rest, fades out when session starts */
+    .play-icon {
+      width:   clamp(22px, 5vmin, 42px);
+      height:  clamp(22px, 5vmin, 42px);
+      opacity: 0.8;
+      /* Triangles look left-shifted geometrically; nudge right to optically centre */
+      transform: translateX(8%);
+    }
+    .card.running .play-icon { opacity: 0; }
+
+    /* Stop — hidden by default, appears on hover when running (desktop only) */
+    .stop-icon {
+      width:   clamp(18px, 4vmin, 34px);
+      height:  clamp(18px, 4vmin, 34px);
+      opacity: 0;
+    }
+
+    /* Desktop: pointer cursor + subtle glow on hover */
     @media (hover: hover) {
       .breather { cursor: pointer; }
+
+      /* Idle hover: brighten the visual */
       .breather:hover .square {
         border-color: rgba(255, 255, 255, 0.55);
         transition: border-color 0.3s ease;
@@ -213,10 +236,15 @@
       .breather:hover .circle:not(.hold) {
         background: rgba(255, 255, 255, 0.35);
       }
+
+      /* Running hover: reveal stop icon */
+      .card.running .breather:hover .stop-icon { opacity: 0.82; }
+      /* Slightly dim circle so stop icon reads clearly */
+      .card.running .breather:hover .circle { opacity: 0.75; }
     }
 
-    /* Press feedback on both mobile and desktop */
-    .breather:active .circle { opacity: 0.7; }
+    /* Press feedback */
+    .breather:active .circle { opacity: 0.6; }
 
     /* ── Compact landscape phones ──────────────────────────────────────── */
     @media (orientation: landscape) and (max-height: 500px) {
@@ -239,6 +267,14 @@
       <div class="square"></div>
       <div class="dot"  id="dot"></div>
       <div class="circle" id="circle"></div>
+      <!-- Play: visible at rest -->
+      <svg class="breather-icon play-icon" viewBox="0 0 24 24" fill="white" aria-hidden="true">
+        <path d="M8 5.14v14l11-7-11-7z"/>
+      </svg>
+      <!-- Stop: appears on hover while running (desktop) -->
+      <svg class="breather-icon stop-icon" viewBox="0 0 24 24" fill="white" aria-hidden="true">
+        <rect x="5" y="5" width="14" height="14" rx="3"/>
+      </svg>
     </div>
 
     <div class="phase" id="phase">Ready</div>
