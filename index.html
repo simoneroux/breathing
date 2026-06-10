@@ -10,6 +10,7 @@
   <title>Breathe</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="manifest" href="manifest.webmanifest">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -23,16 +24,21 @@
 
     /* Single gradient on html — body is transparent so there's no seam */
     html {
-      min-height: 100%;
+      height: 100%;
       background: linear-gradient(135deg, var(--bg-a), var(--bg-b));
       transition: background 1.5s ease-in-out;
       overflow: hidden;
     }
     html.hold { background: linear-gradient(135deg, var(--hold-a), var(--hold-b)); }
 
+    /* position:fixed pins the body to the visual viewport — it can never
+       scroll, bounce, or expose anything beneath it. This is the definitive
+       fix for the iOS standalone white footer band.
+       Padding is symmetric (safe-area added equally top and bottom) so the
+       flex centering is true visual centering on the phone.                 */
     body {
-      min-height: 100dvh;
-      min-height: -webkit-fill-available;
+      position: fixed;
+      inset: 0;
       overflow: hidden;
       overscroll-behavior: none;
       touch-action: manipulation;
@@ -40,10 +46,13 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      padding: clamp(1.5rem, 4vh, 3rem) 1.5rem;
-      padding-bottom: max(env(safe-area-inset-bottom), clamp(1.5rem, 4vh, 3rem));
+      padding-top:    calc(env(safe-area-inset-top, 0px)    + clamp(1rem, 3vh, 2.5rem));
+      padding-bottom: calc(env(safe-area-inset-bottom, 0px) + clamp(1rem, 3vh, 2.5rem));
+      padding-left:   calc(env(safe-area-inset-left, 0px)   + 1.25rem);
+      padding-right:  calc(env(safe-area-inset-right, 0px)  + 1.25rem);
       background: transparent;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      -webkit-font-smoothing: antialiased;
       color: white;
     }
 
@@ -55,16 +64,18 @@
       flex-direction: column;
       align-items: center;
       gap: 0;
-      padding: clamp(2rem, 5vw, 3rem) clamp(1.5rem, 4vw, 2.5rem);
+      padding: clamp(2rem, 5vw, 3rem) clamp(1.25rem, 4vw, 2.5rem);
       border-radius: 32px;
       background: rgba(255, 255, 255, 0.12);
       backdrop-filter: blur(20px);
       -webkit-backdrop-filter: blur(20px);
       border: 1px solid rgba(255, 255, 255, 0.15);
       box-shadow: 0 24px 60px rgba(0, 0, 0, 0.18);
-      width: min(440px, 92vw);
+      width: min(440px, 100%);
+      max-height: 100%;
       text-align: center;
       user-select: none;
+      -webkit-user-select: none;
     }
 
     @media (min-width: 640px) {
@@ -80,10 +91,9 @@
     }
 
     /* ── Header — collapses cleanly when breathing starts ──────────────────
-       grid-template-rows: 1fr → 0fr is the only CSS technique that
-       animates height from "exactly the content height" to zero, with no
-       max-height approximation artefacts. margin-bottom is animated in
-       sync so the flex gap below also disappears.                           */
+       grid-template-rows: 1fr → 0fr animates height from exactly the
+       content height to zero. margin-bottom is animated in sync so the
+       gap below also disappears.                                            */
     .header {
       display: grid;
       grid-template-rows: 1fr;
@@ -106,7 +116,6 @@
       .header { margin-bottom: clamp(1.4rem, 3vh, 2.5rem); }
     }
 
-    /* When running: collapse height + gap, fade out */
     .card.running .header {
       grid-template-rows: 0fr;
       margin-bottom: 0;
@@ -128,16 +137,35 @@
     /* ── Breathing visual ─────────────────────────────────────────────── */
     .breather {
       position: relative;
-      width:  clamp(260px, 55vmin, 520px);
-      height: clamp(260px, 55vmin, 520px);
+      width:  clamp(240px, 55vmin, 520px);
+      height: clamp(240px, 55vmin, 520px);
+      max-width: 100%;
       display: flex;
       align-items: center;
       justify-content: center;
       overflow: visible;
       margin-bottom: clamp(0.9rem, 2.5vw, 1.5rem);
+      -webkit-tap-highlight-color: transparent;
+      outline: none;
     }
     @media (min-width: 640px) {
       .breather { margin-bottom: clamp(1.4rem, 3vh, 2.5rem); }
+    }
+
+    /* Soft ambient glow behind the visual — adds depth without noise */
+    .breather::before {
+      content: '';
+      position: absolute;
+      inset: -12%;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(255, 255, 255, 0.10) 0%, transparent 65%);
+      pointer-events: none;
+    }
+
+    /* Keyboard focus ring (only for keyboard users) */
+    .breather:focus-visible .square {
+      border-color: rgba(255, 255, 255, 0.7);
+      box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.25);
     }
 
     .square {
@@ -145,6 +173,7 @@
       inset: 0;
       border: 1.5px solid rgba(255, 255, 255, 0.28);
       border-radius: 4px;
+      transition: border-color 0.3s ease, box-shadow 0.3s ease;
     }
 
     .dot {
@@ -159,9 +188,11 @@
       left: calc(var(--ds) / -2);
       offset-path: rect(0% 100% 100% 0% round 4px);
       will-change: offset-distance;
+      opacity: 0.45;
+      transition: opacity 0.6s ease;
     }
-
     .dot.running {
+      opacity: 1;
       animation: follow calc(var(--duration) * 4) linear infinite;
     }
 
@@ -176,12 +207,65 @@
       background: rgba(255, 255, 255, 0.25);
       border-radius: 50%;
       transition: transform var(--duration) cubic-bezier(0.4, 0, 0.2, 1),
-                  background 1.5s ease;
+                  background 1.5s ease,
+                  opacity 0.25s ease;
       will-change: transform;
     }
     .circle.hold { background: rgba(26, 35, 126, 0.55); }
 
-    /* ── Phase label ───────────────────────────────────────────────────── */
+    /* Gentle idle pulse — the circle "breathes" softly at rest, hinting
+       at what a tap will do. Animation wins over the inline transform
+       while applied; it stops the moment the session starts.               */
+    .card:not(.running) .circle {
+      animation: idlePulse 4.5s ease-in-out infinite;
+    }
+    @keyframes idlePulse {
+      0%, 100% { transform: scale(1); }
+      50%      { transform: scale(1.06); }
+    }
+
+    /* ── In-circle icons ───────────────────────────────────────────────── */
+    .breather-icon {
+      position: absolute;
+      pointer-events: none;
+      transition: opacity 0.35s ease;
+      filter: drop-shadow(0 1px 6px rgba(0, 0, 0, 0.15));
+    }
+
+    .play-icon {
+      width:   clamp(22px, 5vmin, 42px);
+      height:  clamp(22px, 5vmin, 42px);
+      opacity: 0.85;
+      /* Triangles read left-shifted; nudge right to optically centre */
+      transform: translateX(8%);
+    }
+    .card.running .play-icon { opacity: 0; }
+
+    .stop-icon {
+      width:   clamp(18px, 4vmin, 34px);
+      height:  clamp(18px, 4vmin, 34px);
+      opacity: 0;
+    }
+
+    /* Desktop hover affordances */
+    @media (hover: hover) {
+      .breather { cursor: pointer; }
+
+      .breather:hover .square {
+        border-color: rgba(255, 255, 255, 0.55);
+      }
+      .card:not(.running) .breather:hover .circle {
+        background: rgba(255, 255, 255, 0.35);
+      }
+
+      .card.running .breather:hover .stop-icon { opacity: 0.82; }
+      .card.running .breather:hover .circle    { opacity: 0.75; }
+    }
+
+    /* Press feedback */
+    .breather:active .circle { opacity: 0.6; }
+
+    /* ── Phase label — crossfades on change ────────────────────────────── */
     .phase {
       font-size: clamp(1rem, 2.8vw, 1.5rem);
       font-weight: 500;
@@ -189,70 +273,36 @@
       min-height: 1.6em;
       margin-bottom: 0.4rem;
     }
+    .phase.swap { animation: phaseIn 0.6s ease; }
+    @keyframes phaseIn {
+      from { opacity: 0; transform: translateY(5px); }
+      to   { opacity: 1; transform: none; }
+    }
 
     /* ── Cycles counter ────────────────────────────────────────────────── */
     .cycles-label {
       font-size: clamp(0.75rem, 1.5vw, 0.85rem);
       opacity: 0.5;
       min-height: 1.2em;
+      font-variant-numeric: tabular-nums;
     }
-
-    /* ── Breather is the tap target ────────────────────────────────────── */
-    .breather { -webkit-tap-highlight-color: transparent; }
-
-    /* ── In-circle icons ───────────────────────────────────────────────── */
-    .breather-icon {
-      position: absolute;
-      pointer-events: none;
-      transition: opacity 0.35s ease;
-    }
-
-    /* Play — visible at rest, fades out when session starts */
-    .play-icon {
-      width:   clamp(22px, 5vmin, 42px);
-      height:  clamp(22px, 5vmin, 42px);
-      opacity: 0.8;
-      /* Triangles look left-shifted geometrically; nudge right to optically centre */
-      transform: translateX(8%);
-    }
-    .card.running .play-icon { opacity: 0; }
-
-    /* Stop — hidden by default, appears on hover when running (desktop only) */
-    .stop-icon {
-      width:   clamp(18px, 4vmin, 34px);
-      height:  clamp(18px, 4vmin, 34px);
-      opacity: 0;
-    }
-
-    /* Desktop: pointer cursor + subtle glow on hover */
-    @media (hover: hover) {
-      .breather { cursor: pointer; }
-
-      /* Idle hover: brighten the visual */
-      .breather:hover .square {
-        border-color: rgba(255, 255, 255, 0.55);
-        transition: border-color 0.3s ease;
-      }
-      .breather:hover .circle:not(.hold) {
-        background: rgba(255, 255, 255, 0.35);
-      }
-
-      /* Running hover: reveal stop icon */
-      .card.running .breather:hover .stop-icon { opacity: 0.82; }
-      /* Slightly dim circle so stop icon reads clearly */
-      .card.running .breather:hover .circle { opacity: 0.75; }
-    }
-
-    /* Press feedback */
-    .breather:active .circle { opacity: 0.6; }
 
     /* ── Compact landscape phones ──────────────────────────────────────── */
     @media (orientation: landscape) and (max-height: 500px) {
-      .card { gap: 0.5rem; }
       .breather {
-        width:  clamp(140px, 62vh, 300px);
-        height: clamp(140px, 62vh, 300px);
+        width:  clamp(140px, 58vh, 300px);
+        height: clamp(140px, 58vh, 300px);
+        margin-bottom: 0.5rem;
       }
+      .header { margin-bottom: 0.5rem; }
+      .card { padding: 1rem 1.5rem; }
+    }
+
+    /* ── Reduced motion: keep the breathing cue, drop the décor ────────── */
+    @media (prefers-reduced-motion: reduce) {
+      .card:not(.running) .circle { animation: none; }
+      .dot.running { animation-duration: calc(var(--duration) * 4); } /* keep pacing cue */
+      .phase.swap { animation: none; }
     }
   </style>
 </head>
@@ -267,17 +317,15 @@
       <div class="square"></div>
       <div class="dot"  id="dot"></div>
       <div class="circle" id="circle"></div>
-      <!-- Play: visible at rest -->
       <svg class="breather-icon play-icon" viewBox="0 0 24 24" fill="white" aria-hidden="true">
         <path d="M8 5.14v14l11-7-11-7z"/>
       </svg>
-      <!-- Stop: appears on hover while running (desktop) -->
       <svg class="breather-icon stop-icon" viewBox="0 0 24 24" fill="white" aria-hidden="true">
         <rect x="5" y="5" width="14" height="14" rx="3"/>
       </svg>
     </div>
 
-    <div class="phase" id="phase">Ready</div>
+    <div class="phase" id="phase" aria-live="polite">Ready</div>
     <div class="cycles-label" id="cycles-label"></div>
   </div>
 
@@ -285,13 +333,14 @@
     const PHASE_MS     = 5000;
     const TOTAL_CYCLES = 4;
 
-    const htmlEl   = document.documentElement;
-    const card     = document.querySelector('.card');
-    const breather = document.getElementById('breather');
-    const dot      = document.getElementById('dot');
-    const circle   = document.getElementById('circle');
-    const phase    = document.getElementById('phase');
-    const label    = document.getElementById('cycles-label');
+    const htmlEl    = document.documentElement;
+    const themeMeta = document.querySelector('meta[name="theme-color"]');
+    const card      = document.querySelector('.card');
+    const breather  = document.getElementById('breather');
+    const dot       = document.getElementById('dot');
+    const circle    = document.getElementById('circle');
+    const phase     = document.getElementById('phase');
+    const label     = document.getElementById('cycles-label');
 
     let running  = false;
     let timeouts = [];
@@ -301,9 +350,29 @@
 
     function setPhase(text, isHold) {
       phase.textContent = text;
+      // restart the crossfade animation
+      phase.classList.remove('swap');
+      void phase.offsetWidth;
+      phase.classList.add('swap');
+
       htmlEl.classList.toggle('hold', isHold);
       circle.classList.toggle('hold', isHold);
+      // keep the iOS/Android status bar tint in step with the gradient
+      themeMeta.content = isHold ? '#1a237e' : '#3f51b5';
     }
+
+    // ── Screen Wake Lock — keep the display on during a session ─────────
+    let wakeLock = null;
+    async function acquireWakeLock() {
+      try { wakeLock = await navigator.wakeLock?.request('screen'); } catch (e) {}
+    }
+    function releaseWakeLock() {
+      wakeLock?.release().catch(() => {});
+      wakeLock = null;
+    }
+    document.addEventListener('visibilitychange', () => {
+      if (running && document.visibilityState === 'visible') acquireWakeLock();
+    });
 
     function runCycle(n) {
       if (n > TOTAL_CYCLES) { finish(); return; }
@@ -328,12 +397,14 @@
       breather.setAttribute('aria-label', 'Stop breathing');
       card.classList.add('running');
       dot.classList.add('running');
+      acquireWakeLock();
       runCycle(1);
     }
 
     function stop() {
       running = false;
       clear();
+      releaseWakeLock();
       breather.setAttribute('aria-label', 'Start breathing');
       card.classList.remove('running');
       dot.classList.remove('running');
@@ -344,6 +415,7 @@
 
     function finish() {
       running = false;
+      releaseWakeLock();
       breather.setAttribute('aria-label', 'Start again');
       card.classList.remove('running');
       dot.classList.remove('running');
@@ -352,10 +424,8 @@
       label.textContent = `${TOTAL_CYCLES} cycles complete`;
     }
 
-    // Click / tap anywhere on the breather to start or stop
     breather.addEventListener('click', () => running ? stop() : (stop(), start()));
 
-    // Keyboard support (Space / Enter) for accessibility
     breather.addEventListener('keydown', e => {
       if (e.key === ' ' || e.key === 'Enter') {
         e.preventDefault();
