@@ -22,29 +22,51 @@
       --duration: 5s;
     }
 
-    /* Single gradient on html — body is transparent so there's no seam.
-       CRITICAL: background-color must be set explicitly. iOS paints the
-       safe-area region (home indicator) and overscroll zones with the
-       page's background-COLOR only — it never extends background-IMAGES
-       (gradients) there. The `background:` shorthand resets the color to
-       transparent, which iOS renders as a white bar at the bottom.        */
+    /* Solid color on html only. iOS paints safe areas & overscroll with
+       the page's background-COLOR — never background-IMAGES — so this is
+       the fallback that keeps those regions indigo instead of white.      */
     html {
       height: 100%;
       background-color: var(--bg-b);
-      background-image: linear-gradient(135deg, var(--bg-a), var(--bg-b));
       transition: background-color 1.5s ease-in-out;
       overflow: hidden;
     }
-    html.hold {
-      background-color: var(--hold-b);
-      background-image: linear-gradient(135deg, var(--hold-a), var(--hold-b));
+    html.hold { background-color: var(--hold-b); }
+
+    /* The gradient lives on fixed pseudo-layers that overshoot the layout
+       viewport by the safe-area insets, so one continuous gradient covers
+       the physical screen — status bar to home indicator — with no band
+       of mismatched color at either end. Two layers because gradients
+       can't interpolate: the hold gradient sits on top and crossfades in
+       via opacity, which also makes the hold transition genuinely smooth. */
+    body::before,
+    body::after {
+      content: '';
+      position: fixed;
+      top:    calc(-1 * env(safe-area-inset-top,    0px));
+      right:  calc(-1 * env(safe-area-inset-right,  0px));
+      bottom: calc(-1 * env(safe-area-inset-bottom, 0px));
+      left:   calc(-1 * env(safe-area-inset-left,   0px));
+      z-index: -1;
+      pointer-events: none;
     }
+    body::before {
+      background: linear-gradient(135deg, var(--bg-a), var(--bg-b));
+    }
+    body::after {
+      background: linear-gradient(135deg, var(--hold-a), var(--hold-b));
+      opacity: 0;
+      transition: opacity 1.5s ease-in-out;
+    }
+    html.hold body::after { opacity: 1; }
 
     /* position:fixed pins the body to the visual viewport — it can never
-       scroll, bounce, or expose anything beneath it. This is the definitive
-       fix for the iOS standalone white footer band.
-       Padding is symmetric (safe-area added equally top and bottom) so the
-       flex centering is true visual centering on the phone.                 */
+       scroll, bounce, or expose anything beneath it.
+       Padding is deliberately symmetric WITHOUT safe-area insets: the
+       notch inset (~59px) is bigger than the home-indicator inset (~34px),
+       so adding them to the padding shifted the centered content downward.
+       Everything is centered, nothing sits near an edge, so the insets
+       aren't needed for overlap protection.                                 */
     body {
       position: fixed;
       inset: 0;
@@ -55,10 +77,7 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      padding-top:    calc(env(safe-area-inset-top, 0px)    + clamp(1rem, 3vh, 2.5rem));
-      padding-bottom: calc(env(safe-area-inset-bottom, 0px) + clamp(1rem, 3vh, 2.5rem));
-      padding-left:   calc(env(safe-area-inset-left, 0px)   + 1.25rem);
-      padding-right:  calc(env(safe-area-inset-right, 0px)  + 1.25rem);
+      padding: clamp(1rem, 3vh, 2.5rem) 1.25rem;
       background: transparent;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       -webkit-font-smoothing: antialiased;
@@ -123,6 +142,26 @@
       opacity: 0.65;
     }
 
+    /* ── Stage — the square is the centering anchor ──────────────────────
+       The phase + cycle labels hang below it with absolute positioning,
+       so they add no height to the centered flex block. When the header
+       collapses during a session, the square lands on the exact visual
+       center of the screen.                                                */
+    .stage { position: relative; }
+
+    .captions {
+      position: absolute;
+      top: calc(100% + clamp(0.9rem, 2.5vw, 1.4rem));
+      left: 50%;
+      transform: translateX(-50%);
+      width: max-content;
+      max-width: 90vw;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      pointer-events: none;
+    }
+
     /* ── Breathing visual ─────────────────────────────────────────────── */
     .breather {
       position: relative;
@@ -133,12 +172,8 @@
       align-items: center;
       justify-content: center;
       overflow: visible;
-      margin-bottom: clamp(0.9rem, 2.5vw, 1.5rem);
       -webkit-tap-highlight-color: transparent;
       outline: none;
-    }
-    @media (min-width: 640px) {
-      .breather { margin-bottom: clamp(1.4rem, 3vh, 2.5rem); }
     }
 
     /* Soft ambient glow behind the visual — adds depth without noise */
@@ -281,9 +316,9 @@
       .breather {
         width:  clamp(140px, 58vh, 300px);
         height: clamp(140px, 58vh, 300px);
-        margin-bottom: 0.5rem;
       }
       .header { margin-bottom: 0.5rem; }
+      .captions { top: calc(100% + 0.5rem); }
     }
 
     /* ── Reduced motion: keep the breathing cue, drop the décor ────────── */
@@ -301,20 +336,24 @@
       <p class="subtitle">Box breathing · 4 phases · 5 s each</p>
     </div></div>
 
-    <div class="breather" id="breather" role="button" tabindex="0" aria-label="Start breathing">
-      <div class="square"></div>
-      <div class="dot"  id="dot"></div>
-      <div class="circle" id="circle"></div>
-      <svg class="breather-icon play-icon" viewBox="0 0 24 24" fill="white" aria-hidden="true">
-        <path d="M8 5.14v14l11-7-11-7z"/>
-      </svg>
-      <svg class="breather-icon stop-icon" viewBox="0 0 24 24" fill="white" aria-hidden="true">
-        <rect x="5" y="5" width="14" height="14" rx="3"/>
-      </svg>
-    </div>
+    <div class="stage">
+      <div class="breather" id="breather" role="button" tabindex="0" aria-label="Start breathing">
+        <div class="square"></div>
+        <div class="dot"  id="dot"></div>
+        <div class="circle" id="circle"></div>
+        <svg class="breather-icon play-icon" viewBox="0 0 24 24" fill="white" aria-hidden="true">
+          <path d="M8 5.14v14l11-7-11-7z"/>
+        </svg>
+        <svg class="breather-icon stop-icon" viewBox="0 0 24 24" fill="white" aria-hidden="true">
+          <rect x="5" y="5" width="14" height="14" rx="3"/>
+        </svg>
+      </div>
 
-    <div class="phase" id="phase" aria-live="polite">Ready</div>
-    <div class="cycles-label" id="cycles-label"></div>
+      <div class="captions">
+        <div class="phase" id="phase" aria-live="polite">Ready</div>
+        <div class="cycles-label" id="cycles-label"></div>
+      </div>
+    </div>
   </div>
 
   <script>
