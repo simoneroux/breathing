@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      2.0.0
+// @version      2.1.0
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
 // @author       Simon Roux
 // @homepageURL  https://github.com/simoneroux/breathing
@@ -133,10 +133,20 @@
   function deviceLabel() {
     if (CONFIG.DEVICE_NAME) return CONFIG.DEVICE_NAME;
     const ua = navigator.userAgent;
-    if (/iPhone/.test(ua)) return 'iPhone';
-    if (/iPad/.test(ua)) return 'iPad';
-    if (/Macintosh/.test(ua)) return 'Mac';
-    return 'unknown-device';
+    const device =
+      /iPhone/.test(ua) ? 'iPhone'
+      // iPadOS Safari reports "Macintosh" by default; real Macs have no touch
+      : /iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) ? 'iPad'
+      : /Macintosh/.test(ua) ? 'Mac'
+      : 'unknown';
+    const browser =
+      /Edg\//.test(ua) ? 'Edge'
+      : /OPR\/|Opera/.test(ua) ? 'Opera'
+      : /Firefox\//.test(ua) ? 'Firefox'
+      : /Chrome\//.test(ua) ? 'Chrome'   // must come after Edge/Opera (they embed "Chrome/")
+      : /Safari\//.test(ua) ? 'Safari'   // must come last (everything embeds "Safari/")
+      : 'unknown';
+    return `${device} ${browser}`;
   }
 
   const store = {
