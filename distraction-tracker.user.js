@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      2.1.0
+// @version      2.2.0
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
 // @author       Simon Roux
 // @homepageURL  https://github.com/simoneroux/breathing
@@ -430,13 +430,14 @@
     .mdt-card { text-align: center !important; padding: 1.5rem !important; width: 100% !important;
       max-height: 100% !important; overflow-y: auto !important;
       display: flex !important; flex-direction: column !important; align-items: center !important; }
-    .mdt-title { font-size: clamp(1.5rem, 4vw, 2.2rem) !important; font-weight: 700 !important; margin: 0 0 0.5rem !important;
-      line-height: 1.25 !important; max-width: 520px !important; }
-    .mdt-sub { font-size: 1rem !important; opacity: 0.7 !important; margin: 0 0 2rem !important; }
+    .mdt-title { font-size: clamp(1.3rem, 3.2vw, 1.9rem) !important; font-weight: 700 !important;
+      margin: 0 0 0.75rem !important; line-height: 1.3 !important; max-width: 480px !important; }
+    .mdt-sub { font-size: 0.95rem !important; opacity: 0.7 !important; margin: 0 0 1.75rem !important;
+      max-width: 420px !important; line-height: 1.45 !important; }
     /* Full-page breathing stage — sized like index.html's .breather (55vmin) */
     .mdt-stage { position: relative !important;
-      width: clamp(240px, 55vmin, 520px) !important; height: clamp(240px, 55vmin, 520px) !important;
-      margin: 0 auto 2.5rem !important;
+      width: clamp(200px, 52vmin, 480px) !important; height: clamp(200px, 52vmin, 480px) !important;
+      margin: clamp(0.5rem, 2.5vh, 1.5rem) auto clamp(1.4rem, 4vh, 2.5rem) !important;
       display: flex !important; align-items: center !important; justify-content: center !important; }
     .mdt-square { position: absolute !important; inset: 0 !important; border: 1.5px solid rgba(255,255,255,0.3) !important;
       border-radius: 4px !important; }
@@ -460,9 +461,22 @@
     .mdt-circle.mdt-hold-circle { background: rgba(26,35,126,0.55) !important; }
     .mdt-phase { font-size: clamp(1.1rem, 2.8vw, 1.5rem) !important; font-weight: 500 !important;
       margin: 0 0 2rem !important; min-height: 1.4em !important; }
-    .mdt-big-num { font-size: clamp(3rem, 10vmin, 4.5rem) !important; font-weight: 800 !important;
-      line-height: 1.1 !important; margin: 0 0 0.2rem !important; }
-    .mdt-stats { font-size: 0.85rem !important; opacity: 0.75 !important; margin: 0 0 1.5rem !important; line-height: 1.6 !important; }
+    .mdt-big-num { font-size: clamp(2.6rem, 9vmin, 4.2rem) !important; font-weight: 800 !important;
+      line-height: 1.05 !important; margin: 0 0 0.2rem !important;
+      font-variant-numeric: tabular-nums !important; }
+    .mdt-stats { font-size: 0.85rem !important; opacity: 0.75 !important;
+      margin: 0 0 clamp(1rem, 3vh, 1.75rem) !important; line-height: 1.6 !important; }
+    /* Short viewports (landscape phones, small windows): compress the header
+       and stage so everything fits without scrolling. */
+    @media (max-height: 600px) {
+      .mdt-big-num { font-size: 2rem !important; }
+      .mdt-stats { margin-bottom: 0.75rem !important; line-height: 1.4 !important; }
+      .mdt-stage { width: clamp(150px, 48vh, 300px) !important; height: clamp(150px, 48vh, 300px) !important;
+        margin: 0.25rem auto 1rem !important; }
+      .mdt-phase { margin-bottom: 1rem !important; }
+      .mdt-title { font-size: 1.2rem !important; }
+      .mdt-dial { width: min(40vh, 220px) !important; margin-bottom: 0.75rem !important; }
+    }
     .mdt-btn { display: block !important; width: 100% !important; max-width: 360px !important; padding: 0.9rem !important;
       margin: 0 auto 0.75rem !important;
       border: none !important; border-radius: 14px !important; font-weight: 700 !important; font-size: 1rem !important;
@@ -836,10 +850,24 @@
     return { overlay, card };
   }
 
+  // Shared header for the breathing + choice screens: the attempt count
+  // (including the current attempt) as a big number over a caption — one
+  // consistent header system across the overlay.
+  function buildStatHeader(stats) {
+    const n = stats.attempts24h + 1;
+    const caption = el('div', 'mdt-stats');
+    caption.appendChild(document.createTextNode(`attempt${n === 1 ? '' : 's'} to open ${siteName} in the last 24h`));
+    caption.appendChild(document.createElement('br'));
+    caption.appendChild(document.createTextNode(
+      stats.lastUse ? `Last use: ${relativeTime(stats.lastUse)} ago` : 'First time today',
+    ));
+    return [el('div', 'mdt-big-num', `${n}`), caption];
+  }
+
   // Renders the breathing view into the card and runs `cycles` box cycles;
   // re-runnable ("More breathing" on the choice screen). Completed runs are
   // logged as a 'breathing' event carrying the cycle count.
-  function showBreathing({ overlay, card }, cycles, onDone) {
+  function showBreathing({ overlay, card }, cycles, stats, onDone) {
     while (card.firstChild) card.removeChild(card.firstChild);
     const stage = el('div', 'mdt-stage');
     const circle = el('div', 'mdt-circle');
@@ -847,12 +875,7 @@
     dotTrack.appendChild(el('div', 'mdt-dot mdt-running'));
     stage.append(el('div', 'mdt-square'), dotTrack, circle);
     const phase = el('div', 'mdt-phase', 'Breathe in');
-    card.append(
-      el('div', 'mdt-title', 'Take a breath'),
-      el('div', 'mdt-sub', `Before you open ${siteName}`),
-      stage,
-      phase,
-    );
+    card.append(...buildStatHeader(stats), stage, phase);
     // Force a style flush before the first .mdt-inhale toggle: without it the
     // class lands in the same frame the circle is inserted, so the 5s scale
     // transition never runs and the circle pops in already fully grown.
@@ -900,18 +923,10 @@
   function showChoice(ui, stats, onLeave, onMore) {
     const { card } = ui;
     while (card.firstChild) card.removeChild(card.firstChild);
-    card.appendChild(el('div', 'mdt-title', 'What could be a better use of your time?'));
-
-    const statsLine = el('div', 'mdt-stats');
-    const n = stats.attempts24h;
-    statsLine.appendChild(document.createTextNode(`attempt${n === 1 ? '' : 's'} to open ${siteName} in the last 24h`));
-    statsLine.appendChild(document.createElement('br'));
-    statsLine.appendChild(document.createTextNode(
-      stats.lastUse ? `Last use: ${relativeTime(stats.lastUse)} ago` : 'First time today',
-    ));
-    // One Sec-style: the attempt count leads the screen as a big number,
-    // above the headline.
-    card.prepend(el('div', 'mdt-big-num', `${n}`), statsLine);
+    card.append(
+      ...buildStatHeader(stats),
+      el('div', 'mdt-title', 'What could be a better use of your time?'),
+    );
 
     // One Sec hierarchy: backing out is the highlighted action, continuing is
     // a quiet text link at the bottom.
@@ -1026,11 +1041,6 @@
   }
   GM.addStyle(`.mdt-hidden-page > body { visibility: hidden !important; }`);
 
-  function statsTitle(stats) {
-    const n = stats.attempts24h;
-    return `${n} attempt${n === 1 ? '' : 's'} today · ${formatDuration(stats.minutesSaved24h || 0)} saved`;
-  }
-
   async function main() {
     flushQueue(); // opportunistic background sync, never blocks rendering
     addGear();    // stats entry point, present locked or unlocked
@@ -1043,13 +1053,9 @@
     const attemptEvent = await logEvent('attempt');
     recordLocalAttempt();
 
-    const originalTitle = document.title;
-    document.title = statsTitle(currentStats);
-
     const dismiss = () => {
       ui.overlay.remove();
       unhidePage();
-      document.title = originalTitle;
       showRelockBar();
     };
     let mode = 'breathing';
@@ -1057,25 +1063,27 @@
       mode = 'choice';
       showChoice(ui, currentStats, dismiss, (nCycles) => {
         mode = 'breathing';
-        showBreathing(ui, nCycles, renderChoice);
+        showBreathing(ui, nCycles, currentStats, renderChoice);
       });
     };
 
-    showBreathing(ui, CONFIG.BREATH_CYCLES, renderChoice);
+    showBreathing(ui, CONFIG.BREATH_CYCLES, currentStats, renderChoice);
 
-    // Fresh stats patch in progressively — but never interrupt a breathing
-    // cycle; if the user is mid-breath the updated numbers show on the next
-    // choice screen via currentStats.
+    // Fresh stats patch in progressively — never interrupting a breathing
+    // cycle or a picker: mid-breathing the header numbers are swapped in
+    // place; the main choice screen is re-rendered wholesale.
     const session = await getSession();
     const fresh = session && await fetchRemoteStats(session, attemptEvent.id);
     if (fresh) {
       currentStats = fresh;
-      if (document.getElementById('mdt-overlay')) document.title = statsTitle(fresh);
-      // Only re-render if the MAIN choice screen is showing (it's the only
-      // view with a .mdt-stats line) — never yank the user out of a
-      // timer/cycle picker or a breathing run.
-      if (mode === 'choice' && ui.card.querySelector('.mdt-stats')
-          && document.getElementById('mdt-overlay')) renderChoice();
+      if (!document.getElementById('mdt-overlay')) return;
+      if (mode === 'choice' && ui.card.querySelector('.mdt-stats')) {
+        renderChoice();
+      } else if (mode === 'breathing') {
+        const [bigNum, caption] = buildStatHeader(fresh);
+        ui.card.querySelector('.mdt-big-num')?.replaceWith(bigNum);
+        ui.card.querySelector('.mdt-stats')?.replaceWith(caption);
+      }
     }
   }
 
