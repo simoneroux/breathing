@@ -49,6 +49,7 @@
 // @grant        GM.deleteValue
 // @grant        GM.xmlHttpRequest
 // @grant        GM.addStyle
+// @connect      wqdktvfwbjumkgvcijux.supabase.co
 // @run-at       document-start
 // @noframes
 // ==/UserScript==
