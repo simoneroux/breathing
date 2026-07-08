@@ -1,9 +1,12 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      1.0.0
+// @version      2.0.0
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
-// @author       You
+// @author       Simon Roux
+// @homepageURL  https://github.com/simoneroux/breathing
+// @updateURL    https://raw.githubusercontent.com/simoneroux/breathing/main/distraction-tracker.user.js
+// @downloadURL  https://raw.githubusercontent.com/simoneroux/breathing/main/distraction-tracker.user.js
 // @match        *://*.youtube.com/*
 // @match        *://youtube.com/*
 // @match        *://*.facebook.com/*
@@ -73,9 +76,10 @@
   const CONFIG = {
     SUPABASE_URL: 'https://wqdktvfwbjumkgvcijux.supabase.co',
     SUPABASE_ANON_KEY: 'sb_publishable_P9w1-Ounnn1UYy3KXe8udA_qJw3Ng6q',
-    // Set once per device (e.g. 'MacBook', 'iPhone') — purely for your own
-    // debugging if events look wrong from one device vs. another.
-    DEVICE_NAME: 'unnamed-device',
+    // Optional device label for debugging cross-device sync ('' = auto-detect
+    // from the platform). Leave as '' — auto-updates from @updateURL overwrite
+    // any manual edits to this file, so per-device edits don't survive.
+    DEVICE_NAME: '',
     UNLOCK_MAX_MINS: 20,     // dial maximum on "Continue"
     UNLOCK_DEFAULT_MINS: 5,  // dial starting position
     MORE_CYCLES_OPTIONS: [1, 2, 3, 4], // cycle-count choices for "More breathing"
@@ -125,6 +129,15 @@
 
   const host = canonicalHost(location.hostname);
   const siteName = SITES[host] || host;
+
+  function deviceLabel() {
+    if (CONFIG.DEVICE_NAME) return CONFIG.DEVICE_NAME;
+    const ua = navigator.userAgent;
+    if (/iPhone/.test(ua)) return 'iPhone';
+    if (/iPad/.test(ua)) return 'iPad';
+    if (/Macintosh/.test(ua)) return 'Mac';
+    return 'unknown-device';
+  }
 
   const store = {
     get: (key, fallback) => GM.getValue(key, fallback),
@@ -224,7 +237,7 @@
       host,
       url: location.href,
       event_type: eventType,
-      device: CONFIG.DEVICE_NAME,
+      device: deviceLabel(),
       client_created_at: new Date().toISOString(),
       ...extra,
     };

@@ -25,18 +25,20 @@
    Safari in System Settings / Settings → Apps → Safari → Extensions.
 2. Open the raw URL of `distraction-tracker.user.js` from this repo in Safari —
    Userscripts will offer to install it directly.
-3. Edit the installed script (via the extension's editor on Mac, or a file
-   editor with iCloud Drive access on iOS) and fill in the `CONFIG` block at
-   the top:
-   ```js
-   SUPABASE_URL: 'https://YOUR-PROJECT.supabase.co',
-   SUPABASE_ANON_KEY: 'YOUR-ANON-KEY',
-   DEVICE_NAME: 'iPhone', // or 'MacBook', etc — just a label for your own debugging
-   ```
-4. Visit any of the tracked sites. The first interception will prompt for your
+3. Visit any of the tracked sites. The first interception will prompt for your
    Supabase email/password once — this signs the device in and stores a
    refreshable session locally; you won't be asked again unless you sign out
    at the Supabase project level.
+
+### Updates & versioning
+
+The script header carries `@version` plus `@updateURL`/`@downloadURL` pointing
+at this repo's `main` branch, so Tampermonkey and Userscripts check for and
+install updates automatically — no manual re-copying between devices. Because
+updates overwrite the installed copy, don't hand-edit the installed script;
+change this repo instead. Every change to `distraction-tracker.user.js` must
+bump `@version` (semver: breaking/schema changes bump major, features minor,
+fixes patch) or devices will never pick it up.
 
 ## Dashboard
 
