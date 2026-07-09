@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      2.2.0
+// @version      2.3.0
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
 // @author       Simon Roux
 // @homepageURL  https://github.com/simoneroux/breathing
@@ -62,7 +62,8 @@
 // be kept in sync). This script intercepts a fixed list of distracting sites,
 // forces a short box-breathing pause, then offers a One Sec-style choice
 // ("Continue" / "I don't want to open this") and logs the outcome to
-// Supabase so it can be reviewed across devices in dashboard.html.
+// Supabase so it can be reviewed across devices in the in-page stats
+// panel (gear icon, top right of any tracked site).
 //
 // Styling is injected exclusively via GM.addStyle (not a manually appended
 // <style> tag) and all visual state changes are done via classList toggles,
@@ -422,14 +423,23 @@
   // ── Overlay ───────────────────────────────────────────────────────────────
   GM.addStyle(`
     #mdt-overlay { position: fixed !important; inset: 0 !important; z-index: 2147483647 !important;
-      background: linear-gradient(135deg, #5c6bc0, #3f51b5) !important;
-      display: flex !important; align-items: center !important; justify-content: center !important;
+      background: linear-gradient(135deg, #7987c8, #5d6aae) !important;
+      display: flex !important; align-items: stretch !important; justify-content: center !important;
       color: #fff !important; font-family: -apple-system, BlinkMacSystemFont, sans-serif !important;
       transition: background 1.5s ease !important; }
-    #mdt-overlay.mdt-hold { background: linear-gradient(135deg, #303f9f, #1a237e) !important; }
-    .mdt-card { text-align: center !important; padding: 1.5rem !important; width: 100% !important;
-      max-height: 100% !important; overflow-y: auto !important;
-      display: flex !important; flex-direction: column !important; align-items: center !important; }
+    #mdt-overlay.mdt-hold { background: linear-gradient(135deg, #4a568e, #38406e) !important; }
+    /* Top-anchored, not vertically centered: the stat header stays at the
+       same y-position across the breathing, choice, and dial screens no
+       matter how tall the content below it is — no jumping between screens. */
+    .mdt-card { text-align: center !important;
+      padding: calc(clamp(2.5rem, 12vh, 6rem) + env(safe-area-inset-top, 0px)) 1.5rem
+               calc(clamp(1.5rem, 6vh, 3.5rem) + env(safe-area-inset-bottom, 0px)) !important;
+      width: 100% !important; overflow-y: auto !important;
+      display: flex !important; flex-direction: column !important; align-items: center !important;
+      justify-content: flex-start !important; }
+    /* Soft fade on each screen swap instead of an instant jump */
+    .mdt-card > * { animation: mdt-fade 0.4s ease both !important; }
+    @keyframes mdt-fade { from { opacity: 0; } to { opacity: 1; } }
     .mdt-title { font-size: clamp(1.3rem, 3.2vw, 1.9rem) !important; font-weight: 700 !important;
       margin: 0 0 0.75rem !important; line-height: 1.3 !important; max-width: 480px !important; }
     .mdt-sub { font-size: 0.95rem !important; opacity: 0.7 !important; margin: 0 0 1.75rem !important;
@@ -458,14 +468,17 @@
     .mdt-circle { width: 44% !important; height: 44% !important; background: rgba(255,255,255,0.25) !important;
       border-radius: 50% !important; transition: transform 5s cubic-bezier(0.4,0,0.2,1), background 1.5s ease !important; }
     .mdt-circle.mdt-inhale { transform: scale(2.15) !important; }
-    .mdt-circle.mdt-hold-circle { background: rgba(26,35,126,0.55) !important; }
+    .mdt-circle.mdt-hold-circle { background: rgba(56,64,110,0.5) !important; }
     .mdt-phase { font-size: clamp(1.1rem, 2.8vw, 1.5rem) !important; font-weight: 500 !important;
       margin: 0 0 2rem !important; min-height: 1.4em !important; }
     .mdt-big-num { font-size: clamp(2.6rem, 9vmin, 4.2rem) !important; font-weight: 800 !important;
       line-height: 1.05 !important; margin: 0 0 0.2rem !important;
       font-variant-numeric: tabular-nums !important; }
     .mdt-stats { font-size: 0.85rem !important; opacity: 0.75 !important;
-      margin: 0 0 clamp(1rem, 3vh, 1.75rem) !important; line-height: 1.6 !important; }
+      margin: 0 0 clamp(1rem, 3vh, 1.75rem) !important; line-height: 1.6 !important;
+      min-height: 3.2em !important; } /* always reserve 2 lines — the caption
+      can be 1 line ("First time today") or 2; without this the content below
+      shifts when fresh stats swap in */
     /* Short viewports (landscape phones, small windows): compress the header
        and stage so everything fits without scrolling. */
     @media (max-height: 600px) {
@@ -481,7 +494,10 @@
       margin: 0 auto 0.75rem !important;
       border: none !important; border-radius: 14px !important; font-weight: 700 !important; font-size: 1rem !important;
       cursor: pointer !important; font-family: inherit !important; }
-    .mdt-btn-primary { background: rgba(255,255,255,0.92) !important; color: #3f51b5 !important; }
+    /* Buttons anchor to the bottom (thumb reach, One Sec-style); the auto
+       top margin absorbs spare height so the header stays pinned up top. */
+    .mdt-btn-primary { background: rgba(255,255,255,0.92) !important; color: #5d6aae !important;
+      margin-top: auto !important; }
     .mdt-btn-secondary { background: rgba(255,255,255,0.15) !important; color: #fff !important; }
     .mdt-btn-ghost { display: block !important; background: none !important; border: none !important;
       color: #fff !important; opacity: 0.75 !important; font-weight: 600 !important;
@@ -503,12 +519,12 @@
     #mdt-relock { position: fixed !important; top: 0 !important; left: 0 !important; right: 0 !important;
       z-index: 2147483646 !important; height: auto !important;
       padding: calc(0.6rem + env(safe-area-inset-top, 0px)) 1rem 0.6rem !important;
-      background: linear-gradient(135deg, #5c6bc0, #3f51b5) !important; color: #fff !important;
+      background: linear-gradient(135deg, #7987c8, #5d6aae) !important; color: #fff !important;
       font-family: -apple-system, BlinkMacSystemFont, sans-serif !important;
       font-size: 13px !important; font-weight: 600 !important; text-align: center !important;
       cursor: pointer !important; border-bottom: 1px solid rgba(255,255,255,0.2) !important;
       font-variant-numeric: tabular-nums !important; transition: background 0.2s ease !important; }
-    #mdt-relock:hover { background: linear-gradient(135deg, #303f9f, #1a237e) !important; }
+    #mdt-relock:hover { background: linear-gradient(135deg, #4a568e, #38406e) !important; }
     html.mdt-relock-pad { padding-top: calc(40px + env(safe-area-inset-top, 0px)) !important; }
     html.mdt-relock-pad #mdt-gear { top: calc(48px + env(safe-area-inset-top, 0px)) !important; }
 
@@ -548,7 +564,7 @@
       font-family: inherit !important; }
     .mdt-p-arrow:disabled { opacity: 0.3 !important; cursor: default !important; }
     .mdt-p-navlabel { font-weight: 700 !important; min-width: 10rem !important; text-align: center !important; }
-    .mdt-p-hero { background: linear-gradient(135deg, #5c6bc0, #3f51b5) !important; color: #fff !important;
+    .mdt-p-hero { background: linear-gradient(135deg, #7987c8, #5d6aae) !important; color: #fff !important;
       border-radius: 18px !important; padding: 1.2rem 1.4rem !important;
       display: flex !important; flex-wrap: wrap !important; gap: 1rem 2rem !important; margin: 0 0 1rem !important; }
     .mdt-p-num { font-size: 1.7rem !important; font-weight: 800 !important; }
