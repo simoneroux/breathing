@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Distraction Tracker — Sign in</title>
+<style>
+  /* Same visual language as the userscript overlay (see distraction-tracker.user.js) */
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100dvh;
+    background: linear-gradient(135deg, #4d5890, #3f4877);
+    color: #fff; font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    display: flex; align-items: flex-start; justify-content: center;
+    padding: calc(clamp(2.5rem, 12vh, 6rem) + env(safe-area-inset-top, 0px)) 1.5rem
+             calc(2rem + env(safe-area-inset-bottom, 0px));
+  }
+  .wrap { width: 100%; max-width: 380px; text-align: center; }
+  .wrap > * { animation: fade 0.4s ease both; }
+  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .wrap > * { animation: none; } }
+
+  /* Box + circle mark, echoing the breathing stage */
+  .mark { width: 56px; height: 56px; margin: 0 auto 1.25rem; position: relative;
+    border: 1.5px solid rgba(255,255,255,0.35); border-radius: 4px;
+    display: flex; align-items: center; justify-content: center; }
+  .mark::after { content: ''; width: 55%; height: 55%; border-radius: 50%;
+    background: rgba(255,255,255,0.3); }
+
+  h1 { font-size: 1.5rem; font-weight: 700; margin: 0 0 0.5rem; }
+  .sub { font-size: 0.95rem; opacity: 0.7; margin: 0 0 1.75rem; line-height: 1.45; }
+
+  .banner { border-radius: 12px; padding: 0.7rem 1rem; font-size: 0.85rem; line-height: 1.45;
+    margin: 0 0 1.25rem; background: rgba(0,0,0,0.25); display: none; text-align: left; }
+  .banner.warn { display: block; background: rgba(120, 45, 45, 0.55); }
+  .banner.ok { display: block; background: rgba(45, 110, 70, 0.55); }
+
+  .btn { display: block; width: 100%; padding: 0.9rem; margin: 0 0 0.75rem;
+    border: none; border-radius: 14px; font-weight: 700; font-size: 1rem;
+    cursor: pointer; font-family: inherit; }
+  .btn:disabled { opacity: 0.5; cursor: default; }
+  .btn-primary { background: rgba(255,255,255,0.92); color: #3f4877; }
+  .btn-secondary { background: rgba(255,255,255,0.15); color: #fff; }
+  .btn-ghost { background: none; border: none; color: #fff; opacity: 0.75;
+    font-weight: 600; font-size: 0.9rem; cursor: pointer; font-family: inherit;
+    padding: 0.6rem 1rem; margin: 0.25rem auto 0; display: inline-block; }
+  .btn-ghost:hover { opacity: 1; }
+
+  .divider { display: flex; align-items: center; gap: 0.75rem; margin: 1.25rem 0;
+    font-size: 0.8rem; opacity: 0.55; }
+  .divider::before, .divider::after { content: ''; flex: 1; height: 1px;
+    background: rgba(255,255,255,0.25); }
+
+  form { text-align: left; }
+  label { display: block; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.04em;
+    text-transform: uppercase; opacity: 0.65; margin: 0 0 0.35rem 0.25rem; }
+  input { display: block; width: 100%; padding: 0.85rem 1rem; margin: 0 0 1rem;
+    border: 1px solid rgba(255,255,255,0.25); border-radius: 12px;
+    background: rgba(255,255,255,0.1); color: #fff; font-size: 1rem; font-family: inherit; }
+  input::placeholder { color: rgba(255,255,255,0.4); }
+  input:focus { outline: 2px solid rgba(255,255,255,0.6); outline-offset: 1px; }
+
+  .status { min-height: 1.4em; font-size: 0.9rem; margin: 0 0 1rem; opacity: 0.85; }
+  .status.error { color: #ffb8b8; opacity: 1; }
+
+  #signed-in { display: none; }
+  .who { font-size: 1.05rem; font-weight: 600; margin: 0 0 0.25rem; }
+  .sync { font-size: 0.9rem; margin: 0 0 1.5rem; opacity: 0.8; }
+  .sync.ok { color: #b9f0cd; opacity: 1; }
+
+  .pk-list { text-align: left; margin: 1.5rem 0 0; }
+  .pk-row { background: rgba(255,255,255,0.1); border-radius: 12px;
+    padding: 0.75rem 1rem; margin: 0 0 0.6rem;
+    display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+  .pk-name { font-weight: 600; font-size: 0.95rem; }
+  .pk-meta { font-size: 0.75rem; opacity: 0.6; margin-top: 0.15rem; }
+  .pk-del { background: none; border: none; color: #fff; opacity: 0.5;
+    font-size: 1rem; cursor: pointer; padding: 0.35rem; font-family: inherit; }
+  .pk-del:hover { opacity: 1; }
+  .pk-empty { font-size: 0.85rem; opacity: 0.6; text-align: center; padding: 0.5rem 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="mark" aria-hidden="true"></div>
+  <h1>Distraction Tracker</h1>
+  <p class="sub">Sign in once per device to sync your stats across all tracked sites.</p>
+
+  <div id="bridge-banner" class="banner"></div>
+
+  <div id="signed-out">
+    <button id="btn-passkey" class="btn btn-primary">Sign in with passkey</button>
+    <div class="divider">or use your password</div>
+    <form id="pw-form">
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" autocomplete="username" required
+             placeholder="you@example.com">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required
+             placeholder="••••••••">
+      <button id="btn-password" class="btn btn-secondary" type="submit">Sign in</button>
+    </form>
+  </div>
+
+  <div id="signed-in">
+    <div class="who" id="who"></div>
+    <div class="sync" id="sync">Handing session to the userscript…</div>
+    <button id="btn-register" class="btn btn-primary">Register a passkey on this device</button>
+    <div class="pk-list" id="pk-list"></div>
+    <button id="btn-signout-view" class="btn-ghost">Sign in as someone else</button>
+  </div>
+
+  <div class="status" id="status" role="status"></div>
+</div>
+
+<!-- Session handoff target: the userscript's auth bridge reads this node. -->
+<script type="application/json" id="mdt-session-json"></script>
+
+<script type="module">
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
+
+const SUPABASE_URL = 'https://wqdktvfwbjumkgvcijux.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_P9w1-Ounnn1UYy3KXe8udA_qJw3Ng6q';
+
+// persistSession: false is deliberate — the userscript is the sole owner of
+// its refresh-token family. If this page also kept a session in localStorage,
+// both would rotate the same refresh token independently and trip Supabase's
+// reuse detection. Each visit here just mints a fresh session and hands it off.
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: { experimental: { passkey: true }, persistSession: false },
+});
+
+const $ = id => document.getElementById(id);
+const status = (msg, isError = false) => {
+  $('status').textContent = msg || '';
+  $('status').classList.toggle('error', isError);
+};
+
+// ── Userscript bridge detection (ping/pong) ────────────────────────────────
+let bridgeAlive = false;
+document.addEventListener('mdt-pong', () => {
+  bridgeAlive = true;
+  $('bridge-banner').className = 'banner';
+  $('bridge-banner').textContent = '';
+});
+function pingBridge() {
+  document.dispatchEvent(new Event('mdt-ping'));
+  setTimeout(() => {
+    if (bridgeAlive) return;
+    const b = $('bridge-banner');
+    b.className = 'banner warn';
+    b.textContent = 'Userscript not detected on this page. Enable the Userscripts '
+      + 'extension for this domain (and check it has the v2.5.0+ script), then reload — '
+      + 'otherwise the session can\u2019t be handed off.';
+  }, 1200);
+}
+pingBridge();
+
+// ── Session handoff ────────────────────────────────────────────────────────
+document.addEventListener('mdt-session-stored', () => {
+  const s = $('sync');
+  s.textContent = 'Synced ✓ — this device is signed in. You can close this tab.';
+  s.classList.add('ok');
+});
+
+function handOff(session) {
+  const expiresAtMs = session.expires_in
+    ? Date.now() + session.expires_in * 1000
+    : session.expires_at * 1000;
+  $('mdt-session-json').textContent = JSON.stringify({
+    access_token: session.access_token,
+    refresh_token: session.refresh_token,
+    expires_at: expiresAtMs,
+  });
+  document.dispatchEvent(new Event('mdt-session-ready'));
+  setTimeout(() => {
+    if (!$('sync').classList.contains('ok')) {
+      $('sync').textContent = 'Signed in, but the userscript didn\u2019t confirm the handoff. '
+        + 'Check the Userscripts extension is enabled here, then reload and sign in again.';
+    }
+  }, 2000);
+}
+
+// ── Views ──────────────────────────────────────────────────────────────────
+let currentSession = null;
+
+async function showSignedIn(session, user) {
+  currentSession = session;
+  $('signed-out').style.display = 'none';
+  $('signed-in').style.display = 'block';
+  $('who').textContent = user?.email || 'Signed in';
+  status('');
+  handOff(session);
+  renderPasskeys();
+}
+
+function showSignedOut() {
+  currentSession = null;
+  $('signed-in').style.display = 'none';
+  $('signed-out').style.display = 'block';
+  $('sync').classList.remove('ok');
+  $('sync').textContent = 'Handing session to the userscript…';
+}
+
+async function renderPasskeys() {
+  const list = $('pk-list');
+  list.textContent = '';
+  const { data, error } = await supabase.auth.passkey.list();
+  if (error) return;
+  if (!data?.length) {
+    const empty = document.createElement('div');
+    empty.className = 'pk-empty';
+    empty.textContent = 'No passkeys yet on this account.';
+    list.appendChild(empty);
+    return;
+  }
+  for (const pk of data) {
+    const row = document.createElement('div');
+    row.className = 'pk-row';
+    const left = document.createElement('div');
+    const name = document.createElement('div');
+    name.className = 'pk-name';
+    name.textContent = pk.friendly_name || 'Passkey';
+    const meta = document.createElement('div');
+    meta.className = 'pk-meta';
+    const created = new Date(pk.created_at).toLocaleDateString();
+    meta.textContent = pk.last_used_at
+      ? `Added ${created} · last used ${new Date(pk.last_used_at).toLocaleDateString()}`
+      : `Added ${created}`;
+    left.append(name, meta);
+    const del = document.createElement('button');
+    del.className = 'pk-del';
+    del.textContent = '✕';
+    del.title = 'Delete this passkey';
+    del.onclick = async () => {
+      if (!confirm(`Delete "${pk.friendly_name || 'this passkey'}"?`)) return;
+      const { error: delErr } = await supabase.auth.passkey.delete({ passkeyId: pk.id });
+      if (delErr) status(`Couldn't delete: ${delErr.message}`, true);
+      else renderPasskeys();
+    };
+    row.append(left, del);
+    list.appendChild(row);
+  }
+}
+
+// ── Actions ────────────────────────────────────────────────────────────────
+if (!window.PublicKeyCredential) {
+  $('btn-passkey').disabled = true;
+  $('btn-passkey').textContent = 'Passkeys not supported in this browser';
+}
+
+$('btn-passkey').onclick = async () => {
+  status('Waiting for your passkey…');
+  const { data, error } = await supabase.auth.signInWithPasskey();
+  if (error) {
+    const hint = /not.?found|no.?credential/i.test(error.message || '')
+      ? ' No passkey on this account yet? Sign in with your password below, then register one.'
+      : '';
+    status(`Passkey sign-in failed: ${error.message}.${hint}`, true);
+    return;
+  }
+  showSignedIn(data.session, data.user);
+};
+
+$('pw-form').onsubmit = async (e) => {
+  e.preventDefault();
+  status('Signing in…');
+  $('btn-password').disabled = true;
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email: $('email').value.trim(),
+    password: $('password').value,
+  });
+  $('btn-password').disabled = false;
+  if (error) { status(`Sign in failed: ${error.message}`, true); return; }
+  showSignedIn(data.session, data.user);
+};
+
+$('btn-register').onclick = async () => {
+  status('Follow your device\u2019s passkey prompt…');
+  const { data, error } = await supabase.auth.registerPasskey();
+  if (error) { status(`Couldn't register passkey: ${error.message}`, true); return; }
+  status(`Passkey registered: ${data.friendly_name || data.id}`);
+  renderPasskeys();
+};
+
+$('btn-signout-view').onclick = () => { showSignedOut(); status(''); };
+</script>
+</body>
+</html>

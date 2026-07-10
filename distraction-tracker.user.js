@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      2.4.0
+// @version      2.5.0
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
 // @author       Simon Roux
 // @homepageURL  https://github.com/simoneroux/breathing
@@ -47,6 +47,7 @@
 // @match        *://*.ebay.com/*
 // @match        *://ebay.com/*
 // @match        *://*.bestbuy.com/*
+// @match        https://simoneroux.github.io/breathing/*
 // @grant        GM.setValue
 // @grant        GM.getValue
 // @grant        GM.deleteValue
@@ -65,6 +66,13 @@
 // Supabase so it can be reviewed across devices in the in-page stats
 // panel (gear icon, top right of any tracked site).
 //
+// Auth happens on the hosted auth page (CONFIG.AUTH_PAGE, served from GitHub
+// Pages): passkey or password sign-in with real <input>s, so password
+// managers can autofill and WebAuthn ceremonies have a real origin. The page
+// hands the session to this script via the auth bridge at the bottom of this
+// file; GM storage is per-script and shared across all matched origins, so
+// one sign-in covers every tracked site on the device.
+//
 // Styling is injected exclusively via GM.addStyle (not a manually appended
 // <style> tag) and all visual state changes are done via classList toggles,
 // never inline style properties — this is deliberate, so the overlay still
@@ -77,6 +85,7 @@
   const CONFIG = {
     SUPABASE_URL: 'https://wqdktvfwbjumkgvcijux.supabase.co',
     SUPABASE_ANON_KEY: 'sb_publishable_P9w1-Ounnn1UYy3KXe8udA_qJw3Ng6q',
+    AUTH_PAGE: 'https://simoneroux.github.io/breathing/auth.html',
     // Optional device label for debugging cross-device sync ('' = auto-detect
     // from the platform). Leave as '' — auto-updates from @updateURL overwrite
     // any manual edits to this file, so per-device edits don't survive.
@@ -161,9 +170,10 @@
     });
   }
 
-  // ── Auth: Supabase email/password session, refreshed via GoTrue ─────────
-  // Credentials are entered once per device via a native prompt() and never
-  // touch anything but Supabase's own /auth/v1/token endpoint.
+  // ── Auth: Supabase session, minted on the hosted auth page ──────────────
+  // The session originates from auth.html (passkey or password sign-in) and
+  // arrives via the auth bridge below; this script only ever refreshes it
+  // against Supabase's own /auth/v1/token endpoint.
   async function getSession() {
     let session = await store.get('auth-session', null);
     if (session && session.expires_at > Date.now() + 60000) return session;
@@ -189,46 +199,17 @@
     }
   }
 
-  let bootstrapping = null;
+  // Sign-in happens on the hosted auth page (CONFIG.AUTH_PAGE): password
+  // managers and passkeys both need a real origin with real <input>s, which
+  // prompt() can never provide. The page mints a session and hands it to
+  // this script via the auth bridge at the bottom of this file; until then,
+  // getSession() returns null and events simply queue locally.
   function bootstrapSession() {
-    // Guard against concurrent callers (e.g. flushQueue + main both need a
-    // session) triggering two prompt() dialogs at once.
-    if (bootstrapping) return bootstrapping;
-    bootstrapping = (async () => {
-      try {
-        const email = prompt('Distraction Tracker: sign in with your Supabase account email');
-        const password = email ? prompt('Password:') : null;
-        if (!email || !password) return null;
-        if (CONFIG.SUPABASE_URL.includes('YOUR-PROJECT') || CONFIG.SUPABASE_ANON_KEY.includes('YOUR-ANON-KEY')) {
-          alert('Distraction Tracker: fill in SUPABASE_URL and SUPABASE_ANON_KEY in the script CONFIG first.');
-          return null;
-        }
-        let res;
-        try {
-          res = await gmRequest({
-            method: 'POST',
-            url: `${CONFIG.SUPABASE_URL}/auth/v1/token?grant_type=password`,
-            headers: { apikey: CONFIG.SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
-            data: JSON.stringify({ email, password }),
-          });
-        } catch (err) {
-          alert(`Sign in failed: request did not reach Supabase.\n(${err?.message || err?.error || 'no network / blocked request'})\nCheck SUPABASE_URL in the script CONFIG.`);
-          return null;
-        }
-        let body = null;
-        try { body = JSON.parse(res.responseText); } catch {}
-        if (!body?.access_token) {
-          const reason = body?.error_description || body?.msg || body?.error
-            || `HTTP ${res.status}: ${String(res.responseText).slice(0, 200)}`;
-          alert(`Sign in failed: ${reason}`);
-          return null;
-        }
-        return await persistSession(body);
-      } finally {
-        bootstrapping = null;
-      }
-    })();
-    return bootstrapping;
+    return null;
+  }
+
+  function openAuthPage() {
+    window.open(CONFIG.AUTH_PAGE, '_blank');
   }
 
   async function persistSession(body) {
@@ -579,6 +560,10 @@
     .mdt-p-note { text-align: center !important; font-size: 0.85rem !important;
       opacity: 0.6 !important; margin: 1.2rem 0 0 !important; }
     .mdt-p-status { text-align: center !important; opacity: 0.55 !important; padding: 2.5rem 0 !important; }
+    .mdt-p-signin { margin-top: 0.9rem !important; padding: 0.65rem 1.5rem !important;
+      border: none !important; border-radius: 999px !important; cursor: pointer !important;
+      background: linear-gradient(135deg, #4d5890, #3f4877) !important; color: #fff !important;
+      font-weight: 700 !important; font-size: 0.9rem !important; font-family: inherit !important; }
   `);
 
   function el(tag, className, text) {
@@ -708,7 +693,12 @@
     // Everything below the header + tabs + nav is rebuilt per period change.
     [...wrap.querySelectorAll('.mdt-p-hero, .mdt-p-site, .mdt-p-note, .mdt-p-status')].forEach(n => n.remove());
     if (!data) {
-      wrap.appendChild(el('div', 'mdt-p-status', 'Couldn’t load stats — sign in on a tracked site first.'));
+      const box = el('div', 'mdt-p-status', 'Not signed in — activity is only stored on this device.');
+      box.appendChild(document.createElement('br'));
+      const btn = el('button', 'mdt-p-signin', 'Sign in to sync');
+      btn.onclick = openAuthPage;
+      box.appendChild(btn);
+      wrap.appendChild(box);
       return;
     }
     const { rows, totals, annual } = aggregateStats(data.events, data.sites, windowDays);
@@ -953,6 +943,11 @@
     const continueBtn = el('button', 'mdt-btn-ghost', `Continue to ${siteName}`);
     continueBtn.onclick = () => showTimerPicker(ui, stats, onLeave, onMore);
     card.append(leaveBtn, moreBtn, continueBtn);
+    if (!stats.signedIn) {
+      const signIn = el('button', 'mdt-btn-ghost', 'Not syncing — sign in');
+      signIn.onclick = openAuthPage;
+      card.appendChild(signIn);
+    }
   }
 
   function svgEl(tag, attrs) {
@@ -1065,7 +1060,10 @@
 
     hidePage();
     const ui = buildOverlay();
-    let currentStats = await localStats();
+    let currentStats = {
+      ...await localStats(),
+      signedIn: !!(await store.get('auth-session', null)),
+    };
     const attemptEvent = await logEvent('attempt');
     recordLocalAttempt();
 
@@ -1091,7 +1089,7 @@
     const session = await getSession();
     const fresh = session && await fetchRemoteStats(session, attemptEvent.id);
     if (fresh) {
-      currentStats = fresh;
+      currentStats = { ...fresh, signedIn: true };
       if (!document.getElementById('mdt-overlay')) return;
       if (mode === 'choice' && ui.card.querySelector('.mdt-stats')) {
         renderChoice();
@@ -1103,7 +1101,36 @@
     }
   }
 
-  main();
+  // ── Auth bridge: runs only on the hosted auth page ───────────────────────
+  // auth.html signs in (passkey or password), writes the session JSON into
+  // #mdt-session-json and fires 'mdt-session-ready'; this branch stores it in
+  // GM storage — shared across every matched site on this device — flushes
+  // any locally queued events, and confirms back with 'mdt-session-stored'
+  // so the page can show "Synced ✓". The ping/pong pair lets the page detect
+  // whether the userscript is active on its domain at all.
+  function installAuthBridge() {
+    const adopt = async () => {
+      const node = document.getElementById('mdt-session-json');
+      if (!node?.textContent) return;
+      try {
+        const session = JSON.parse(node.textContent);
+        if (!session?.access_token || !session?.refresh_token) return;
+        await store.set('auth-session', session);
+        flushQueue();
+        document.dispatchEvent(new Event('mdt-session-stored'));
+      } catch {}
+    };
+    document.addEventListener('mdt-session-ready', adopt);
+    document.addEventListener('mdt-ping', () => document.dispatchEvent(new Event('mdt-pong')));
+    if (document.readyState !== 'loading') adopt();
+    else document.addEventListener('DOMContentLoaded', adopt);
+  }
+
+  if (location.hostname === 'simoneroux.github.io') {
+    installAuthBridge();
+  } else {
+    main();
+  }
   // No MutationObserver needed for the body-not-yet-parsed case: the
   // `.mdt-hidden-page > body` rule above is a live CSS selector, so it
   // applies automatically the instant body is inserted, however late.
