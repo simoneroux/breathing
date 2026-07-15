@@ -41,6 +41,10 @@ create table sites (
 
 alter table sites enable row level security;
 create policy "read sites" on sites for select using (true);
+-- The tracked-site list is edited from the userscript's stats panel
+-- (single-tenant: any signed-in user is the owner).
+create policy "insert sites" on sites for insert to authenticated with check (true);
+create policy "delete sites" on sites for delete to authenticated using (true);
 
 insert into sites (host, display_name, avg_minutes_saved) values
   ('youtube.com', 'YouTube', 15),

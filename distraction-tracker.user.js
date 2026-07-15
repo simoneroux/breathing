@@ -1,53 +1,13 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      2.7.1
+// @version      2.8.0
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
 // @author       Simon Roux
 // @homepageURL  https://github.com/simoneroux/breathing
 // @updateURL    https://raw.githubusercontent.com/simoneroux/breathing/main/distraction-tracker.user.js
 // @downloadURL  https://raw.githubusercontent.com/simoneroux/breathing/main/distraction-tracker.user.js
-// @match        *://*.youtube.com/*
-// @match        *://youtube.com/*
-// @match        *://*.facebook.com/*
-// @match        *://facebook.com/*
-// @match        *://*.instagram.com/*
-// @match        *://instagram.com/*
-// @match        *://*.twitter.com/*
-// @match        *://twitter.com/*
-// @match        *://*.x.com/*
-// @match        *://x.com/*
-// @match        *://*.tiktok.com/*
-// @match        *://tiktok.com/*
-// @match        *://*.reddit.com/*
-// @match        *://reddit.com/*
-// @match        *://*.lapresse.ca/*
-// @match        *://*.theverge.com/*
-// @match        *://*.polygon.com/*
-// @match        *://*.theguardian.com/*
-// @match        *://news.ycombinator.com/*
-// @match        *://aeon.co/*
-// @match        *://*.rottentomatoes.com/*
-// @match        *://news.google.com/*
-// @match        *://*.cnn.com/*
-// @match        *://cnn.com/*
-// @match        *://*.bbc.com/*
-// @match        *://*.nytimes.com/*
-// @match        *://*.washingtonpost.com/*
-// @match        *://*.netflix.com/*
-// @match        *://netflix.com/*
-// @match        *://*.hulu.com/*
-// @match        *://hulu.com/*
-// @match        *://*.disneyplus.com/*
-// @match        *://disneyplus.com/*
-// @match        *://*.primevideo.com/*
-// @match        *://*.buzzfeed.com/*
-// @match        *://*.amazon.com/*
-// @match        *://amazon.com/*
-// @match        *://*.ebay.com/*
-// @match        *://ebay.com/*
-// @match        *://*.bestbuy.com/*
-// @match        https://simoneroux.github.io/breathing/*
+// @match        *://*/*
 // @grant        GM.setValue
 // @grant        GM.getValue
 // @grant        GM.deleteValue
@@ -60,11 +20,16 @@
 
 // Companion to index.html's manual breathing tool (canonical visual language:
 // colors, box+dot+circle, 5s phases — see that file if the two ever need to
-// be kept in sync). This script intercepts a fixed list of distracting sites,
-// forces a short box-breathing pause, then offers a One Sec-style choice
-// ("Continue" / "I don't want to open this") and logs the outcome to
+// be kept in sync). This script intercepts a user-managed list of distracting
+// sites, forces a short box-breathing pause, then offers a One Sec-style
+// choice ("Continue" / "I don't want to open this") and logs the outcome to
 // Supabase so it can be reviewed across devices in the in-page stats
 // panel (gear icon, top right of any tracked site).
+//
+// @match is *://*/* on purpose: the tracked-site list is edited from the
+// stats panel and synced through the Supabase `sites` table, and userscript
+// managers can't widen a fixed @match list at runtime. On untracked pages
+// the script reads one GM value and exits before touching the DOM.
 //
 // Auth happens on the hosted auth page (CONFIG.AUTH_PAGE, served from GitHub
 // Pages): passkey or password sign-in with real <input>s, so password
@@ -98,11 +63,10 @@
     PHASE_MS: 5000,
   };
 
-  // Canonical display names for the intercepted sites. The @match list above
-  // controls where the script is allowed to run at all (the Safari extension
-  // permission surface); this map controls display names shown in the
-  // overlay. Keep both lists in sync when adding/removing a site.
-  const SITES = {
+  // Seed list only: the live tracked-site list is the Supabase `sites` table,
+  // cached in GM storage ('tracked-sites') and editable from the stats panel.
+  // This map is used once, to initialize the cache before the first sync.
+  const DEFAULT_SITES = {
     'youtube.com': 'YouTube',
     'facebook.com': 'Facebook',
     'instagram.com': 'Instagram',
@@ -132,14 +96,105 @@
     'bestbuy.com': 'Best Buy',
   };
 
-  function canonicalHost(hostname) {
-    const bare = hostname.replace(/^www\./, '');
-    const known = Object.keys(SITES).find(h => bare === h || bare.endsWith('.' + h));
-    return known || bare;
+  // Assigned during bootstrap (bottom of the file) once the tracked-site
+  // list has decided this page is intercepted; everything below that reads
+  // them (event log keys, overlay copy) only runs on tracked pages.
+  let host = null;
+  let siteName = null;
+
+  // ── Tracked-site list (synced via the Supabase `sites` table) ───────────
+  async function getTrackedSites() {
+    const list = await store.get('tracked-sites', null);
+    if (Array.isArray(list) && list.length) return list;
+    const seeded = Object.entries(DEFAULT_SITES).map(([h, display_name]) => ({ host: h, display_name }));
+    await store.set('tracked-sites', seeded);
+    return seeded;
   }
 
-  const host = canonicalHost(location.hostname);
-  const siteName = SITES[host] || host;
+  // Pull the server list into the local cache. The `sites` SELECT policy is
+  // public, so this works signed out too. An empty server list is ignored —
+  // wiping the cache to nothing would un-track every site on a fetch glitch.
+  async function refreshTrackedSites(throttleMins) {
+    const last = await store.get('tracked-sites-synced-at', 0);
+    if (throttleMins && Date.now() - last < throttleMins * 60000) return;
+    try {
+      const res = await gmRequest({
+        method: 'GET',
+        url: `${CONFIG.SUPABASE_URL}/rest/v1/sites?select=host,display_name`,
+        headers: { apikey: CONFIG.SUPABASE_ANON_KEY },
+      });
+      const rows = JSON.parse(res.responseText);
+      if (Array.isArray(rows) && rows.length) {
+        await store.set('tracked-sites', rows.map(r => ({ host: r.host, display_name: r.display_name })));
+        await store.set('tracked-sites-synced-at', Date.now());
+      }
+    } catch {}
+  }
+
+  // Longest host wins so 'news.google.com' beats a hypothetical 'google.com'.
+  function matchTrackedSite(hostname, tracked) {
+    const bare = hostname.replace(/^www\./, '').toLowerCase();
+    return [...tracked]
+      .sort((a, b) => b.host.length - a.host.length)
+      .find(s => bare === s.host || bare.endsWith('.' + s.host)) || null;
+  }
+
+  // "youtube.com", "https://www.youtube.com/feed", "m.youtube.com/" all
+  // normalize to a bare registrable-ish host; garbage returns null.
+  function normalizeHost(raw) {
+    let v = (raw || '').trim().toLowerCase();
+    if (!v) return null;
+    try {
+      if (v.includes('/') || v.includes(':')) v = new URL(v.includes('://') ? v : `https://${v}`).hostname;
+    } catch { return null; }
+    v = v.replace(/^www\./, '').replace(/\.$/, '');
+    return /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/.test(v) ? v : null;
+  }
+
+  // Add/remove push straight to Supabase (the panel gates both behind
+  // sign-in) and update the local cache immediately so the change applies
+  // on this device's next page load without waiting for a sync.
+  async function addTrackedSite(newHost) {
+    const list = await getTrackedSites();
+    if (!list.some(s => s.host === newHost)) {
+      await store.set('tracked-sites', [...list, { host: newHost, display_name: newHost }]);
+    }
+    const session = await getSession();
+    if (!session) return false;
+    try {
+      const res = await gmRequest({
+        method: 'POST',
+        url: `${CONFIG.SUPABASE_URL}/rest/v1/sites`,
+        headers: {
+          apikey: CONFIG.SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json',
+          Prefer: 'resolution=ignore-duplicates',
+        },
+        data: JSON.stringify([{ host: newHost, display_name: newHost }]),
+      });
+      return res.status >= 200 && res.status < 300;
+    } catch {
+      return false;
+    }
+  }
+
+  async function removeTrackedSite(oldHost) {
+    const list = await getTrackedSites();
+    await store.set('tracked-sites', list.filter(s => s.host !== oldHost));
+    const session = await getSession();
+    if (!session) return false;
+    try {
+      const res = await gmRequest({
+        method: 'DELETE',
+        url: `${CONFIG.SUPABASE_URL}/rest/v1/sites?host=eq.${encodeURIComponent(oldHost)}`,
+        headers: { apikey: CONFIG.SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}` },
+      });
+      return res.status >= 200 && res.status < 300;
+    } catch {
+      return false;
+    }
+  }
 
   function deviceLabel() {
     if (CONFIG.DEVICE_NAME) return CONFIG.DEVICE_NAME;
@@ -723,6 +778,31 @@
       background: #e6e6ee !important; color: #1c1c28 !important;
       font-weight: 700 !important; font-size: 0.85rem !important; font-family: inherit !important; }
     .mdt-p-signout:hover { background: #dcdce6 !important; }
+
+    /* ── Tracked-sites editor (bottom of the stats panel) ──────────────── */
+    .mdt-set-title { font-size: 1.05rem !important; font-weight: 800 !important;
+      margin: 2rem 0 0.75rem !important; }
+    .mdt-set-row { background: #fff !important; border-radius: 14px !important;
+      padding: 0.7rem 1rem !important; margin: 0 0 0.5rem !important;
+      display: flex !important; align-items: center !important;
+      justify-content: space-between !important; gap: 0.75rem !important; }
+    .mdt-set-del { background: none !important; border: none !important; color: inherit !important;
+      opacity: 0.4 !important; font-size: 1rem !important; cursor: pointer !important;
+      padding: 0.35rem !important; font-family: inherit !important; }
+    .mdt-set-del:hover { opacity: 1 !important; }
+    .mdt-set-add { display: flex !important; gap: 0.6rem !important; margin: 0.75rem 0 0 !important; }
+    .mdt-set-input { flex: 1 !important; min-width: 0 !important; padding: 0.7rem 1rem !important;
+      border: 1px solid #d5d5e0 !important; border-radius: 12px !important;
+      background: #fff !important; color: inherit !important;
+      /* 16px: anything smaller makes iOS Safari zoom the page on focus */
+      font-size: 16px !important; font-family: inherit !important; }
+    .mdt-set-btn { padding: 0.7rem 1.2rem !important; border: none !important;
+      border-radius: 12px !important; cursor: pointer !important;
+      background: linear-gradient(135deg, #4d5890, #3f4877) !important; color: #fff !important;
+      font-weight: 700 !important; font-size: 0.9rem !important; font-family: inherit !important; }
+    .mdt-set-note { text-align: center !important; font-size: 0.8rem !important;
+      opacity: 0.55 !important; margin: 0.75rem 0 0 !important; }
+    .mdt-set-foot { text-align: center !important; margin: 1.5rem 0 0 !important; }
   `);
 
   function el(tag, className, text) {
@@ -861,8 +941,8 @@
   }
 
   function renderPanelBody(wrap, data, windowDays) {
-    // Everything below the header + tabs + nav is rebuilt per period change.
-    [...wrap.querySelectorAll('.mdt-p-hero, .mdt-p-site, .mdt-p-note, .mdt-p-status')].forEach(n => n.remove());
+    // `wrap` is the panel's stats container — rebuilt wholesale per period.
+    while (wrap.firstChild) wrap.removeChild(wrap.firstChild);
     if (!data) {
       const box = el('div', 'mdt-p-status', 'Not signed in — activity is only stored on this device.');
       box.appendChild(document.createElement('br'));
@@ -919,30 +999,6 @@
 
     wrap.appendChild(el('div', 'mdt-p-note',
       `At this rate: ${annual.prevented}× prevented · ${formatDuration(annual.minutes)} saved per year`));
-
-    // Signed-in footer: which account this device syncs as, plus a local
-    // sign-out. Wrapped in .mdt-p-note so period-change re-renders (which
-    // clear that class) rebuild it too. Local-only: deletes this device's
-    // tokens without revoking anything server-side — other devices stay
-    // signed in, and queued events survive to sync after the next sign-in.
-    const foot = el('div', 'mdt-p-note');
-    const account = el('div', 'mdt-p-account', '');
-    const signOut = el('button', 'mdt-p-signout', 'Sign out on this device');
-    signOut.onclick = async () => {
-      await GM.deleteValue('auth-session');
-      location.reload();
-    };
-    foot.append(account, signOut);
-    wrap.appendChild(foot);
-    // The email lives in the access token's JWT payload — decode it lazily
-    // (base64url), and leave the line blank if anything about it surprises us.
-    store.get('auth-session', null).then(session => {
-      try {
-        const b64 = session.access_token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
-        const payload = JSON.parse(atob(b64));
-        if (payload.email) account.textContent = `Signed in as ${payload.email}`;
-      } catch {}
-    });
   }
 
   function openStatsPanel() {
@@ -969,6 +1025,12 @@
     nav.append(prevBtn, navLabel, nextBtn);
     wrap.appendChild(nav);
 
+    // Stats and settings live in separate containers so period changes
+    // rebuild only the stats without touching the tracked-sites editor.
+    const body = el('div');
+    const settings = el('div');
+    wrap.append(body, settings);
+
     let periodType = 'week';
     let offset = 0; // 0 = current period, -1 = previous…
     let requestSeq = 0;
@@ -977,8 +1039,8 @@
       const range = periodRange(periodType, offset);
       navLabel.textContent = periodLabel(periodType, offset, range);
       nextBtn.disabled = offset === 0;
-      [...wrap.querySelectorAll('.mdt-p-hero, .mdt-p-site, .mdt-p-note, .mdt-p-status')].forEach(n => n.remove());
-      wrap.appendChild(el('div', 'mdt-p-status', 'Loading…'));
+      while (body.firstChild) body.removeChild(body.firstChild);
+      body.appendChild(el('div', 'mdt-p-status', 'Loading…'));
       const seq = ++requestSeq;
       let data = null;
       try { data = await fetchStatsData(range); } catch {}
@@ -989,7 +1051,7 @@
         (Math.min(Date.now(), range.end.getTime()) - range.start.getTime()) / 86400000,
         1 / 24,
       );
-      renderPanelBody(wrap, data, windowDays);
+      renderPanelBody(body, data, windowDays);
     };
     for (const p of PERIODS) {
       const btn = el('button', 'mdt-tab', p.label);
@@ -1000,10 +1062,92 @@
     prevBtn.onclick = () => { offset--; render(); };
     nextBtn.onclick = () => { if (offset < 0) { offset++; render(); } };
 
+    // ── Tracked sites editor + account footer ──────────────────────────
+    const renderSettings = async () => {
+      while (settings.firstChild) settings.removeChild(settings.firstChild);
+      const signedIn = !!(await store.get('auth-session', null));
+      settings.appendChild(el('div', 'mdt-set-title', 'Tracked sites'));
+      const list = await getTrackedSites();
+      for (const s of [...list].sort((a, b) => a.host.localeCompare(b.host))) {
+        const row = el('div', 'mdt-set-row');
+        const left = el('div');
+        left.append(
+          el('div', 'mdt-p-site-name', s.display_name || s.host),
+          el('div', 'mdt-p-site-sub', s.host),
+        );
+        row.appendChild(left);
+        if (signedIn) {
+          const del = el('button', 'mdt-set-del', '✕');
+          del.title = `Stop tracking ${s.host}`;
+          del.onclick = async () => {
+            if (list.length <= 1) {
+              alert('Keep at least one tracked site — this panel only exists on tracked pages.');
+              return;
+            }
+            if (!confirm(`Stop tracking ${s.host}?`)) return;
+            const ok = await removeTrackedSite(s.host);
+            if (!ok) alert(`${s.host} is untracked on this device, but the change didn't reach the server — a later sync may bring it back.`);
+            renderSettings();
+          };
+          row.appendChild(del);
+        }
+        settings.appendChild(row);
+      }
+      if (signedIn) {
+        const form = el('form', 'mdt-set-add');
+        const input = el('input', 'mdt-set-input');
+        input.placeholder = 'example.com';
+        input.autocapitalize = 'off';
+        input.spellcheck = false;
+        const addBtn = el('button', 'mdt-set-btn', 'Add');
+        addBtn.type = 'submit';
+        form.onsubmit = async e => {
+          e.preventDefault();
+          const h = normalizeHost(input.value);
+          if (!h) { alert('Enter a site like example.com'); return; }
+          const ok = await addTrackedSite(h);
+          if (!ok) alert(`${h} is tracked on this device, but the change didn't reach the server — it won't sync to other devices yet.`);
+          input.value = '';
+          renderSettings();
+        };
+        form.append(input, addBtn);
+        settings.appendChild(form);
+        settings.appendChild(el('div', 'mdt-set-note',
+          'Changes apply on the next page load and sync to your other devices.'));
+      } else {
+        settings.appendChild(el('div', 'mdt-set-note', 'Sign in to add or remove tracked sites.'));
+      }
+      // Account footer. Local-only sign-out: deletes this device's tokens
+      // without revoking anything server-side — other devices stay signed
+      // in, and queued events survive to sync after the next sign-in.
+      const foot = el('div', 'mdt-set-foot');
+      if (signedIn) {
+        const account = el('div', 'mdt-p-account', '');
+        const signOut = el('button', 'mdt-p-signout', 'Sign out on this device');
+        signOut.onclick = async () => {
+          await GM.deleteValue('auth-session');
+          location.reload();
+        };
+        foot.append(account, signOut);
+        // The email lives in the access token's JWT payload — decode it
+        // lazily (base64url), and leave the line blank if it surprises us.
+        store.get('auth-session', null).then(session => {
+          try {
+            const b64 = session.access_token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+            const payload = JSON.parse(atob(b64));
+            if (payload.email) account.textContent = `Signed in as ${payload.email}`;
+          } catch {}
+        });
+      }
+      settings.appendChild(foot);
+    };
+
     document.documentElement.appendChild(panel);
     // Drain any locally queued events first so the numbers include this
     // device's latest activity; render regardless of how the flush went.
     flushQueue().then(render, render);
+    // Force a list sync so edits made on other devices show immediately.
+    refreshTrackedSites(0).then(renderSettings, renderSettings);
   }
 
   // ── Re-lock bar — countdown + tap to re-lock; auto re-locks at expiry ────
@@ -1384,7 +1528,15 @@
   if (location.hostname === 'simoneroux.github.io') {
     installAuthBridge();
   } else {
-    main();
+    // Cheap on untracked pages: one throttled background list sync plus one
+    // GM read to decide, then exit without ever touching the DOM.
+    refreshTrackedSites(10);
+    const tracked = matchTrackedSite(location.hostname, await getTrackedSites());
+    if (tracked) {
+      host = tracked.host;
+      siteName = tracked.display_name || tracked.host;
+      main();
+    }
   }
   // No MutationObserver needed for the body-not-yet-parsed case: the
   // `.mdt-hidden-page > body` rule above is a live CSS selector, so it
