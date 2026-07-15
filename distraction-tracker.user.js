@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      2.7.0
+// @version      2.7.1
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
 // @author       Simon Roux
 // @homepageURL  https://github.com/simoneroux/breathing
@@ -732,6 +732,15 @@
     return e;
   }
 
+  // Inline styles with the 'important' priority outrank every author
+  // stylesheet rule, whatever its specificity — the last resort against
+  // sites (Lapresse) whose resets beat even #id-prefixed !important rules.
+  // CSP-safe: style-src blocks <style> tags and style="" attributes, but
+  // programmatic CSSOM writes like this are exempt.
+  function setImportant(node, styles) {
+    for (const [prop, val] of Object.entries(styles)) node.style.setProperty(prop, val, 'important');
+  }
+
   // ── In-page stats panel (opened via the gear icon) ───────────────────────
   const PERIODS = [
     { key: 'day', label: 'Day' },
@@ -1081,14 +1090,35 @@
   function showBreathing({ overlay, card }, cycles, stats, onDone) {
     while (card.firstChild) card.removeChild(card.firstChild);
     const stage = el('div', 'mdt-stage');
+    const square = el('div', 'mdt-square');
     const circle = el('div', 'mdt-circle');
     const dotTrack = el('div', 'mdt-dot-track');
     dotTrack.appendChild(el('div', 'mdt-dot mdt-running'));
-    stage.append(el('div', 'mdt-square'), dotTrack, circle);
+    stage.append(square, dotTrack, circle);
+    // Geometry pinned inline (see setImportant): the stylesheet still carries
+    // these rules for sane sites, but the layout-critical properties can't be
+    // left to a specificity fight. The inhale scale is driven through
+    // setScale below for the same reason — an inline transform would shadow
+    // any class-based transform state anyway.
+    setImportant(stage, { position: 'relative' });
+    setImportant(square, { position: 'absolute', inset: '0', margin: '0' });
+    setImportant(dotTrack, {
+      position: 'absolute', inset: '0', margin: '0',
+      transform: 'rotate(-90deg)', 'transform-origin': 'center',
+    });
+    setImportant(circle, {
+      position: 'absolute', left: '50%', top: '50%',
+      width: '44%', height: '44%', margin: '0',
+      'transform-origin': 'center',
+      transform: 'translate(-50%, -50%) scale(1)',
+      transition: 'transform 5s cubic-bezier(0.4,0,0.2,1), background 1.5s ease',
+    });
+    const setScale = s =>
+      circle.style.setProperty('transform', `translate(-50%, -50%) scale(${s})`, 'important');
     const phase = el('div', 'mdt-phase', 'Breathe in');
     card.append(...buildStatHeader(stats), stage, phase);
-    // Force a style flush before the first .mdt-inhale toggle: without it the
-    // class lands in the same frame the circle is inserted, so the 5s scale
+    // Force a style flush before the first scale-up: without it the new
+    // transform lands in the same frame the circle is inserted, so the 5s
     // transition never runs and the circle pops in already fully grown.
     void circle.offsetWidth;
 
@@ -1096,7 +1126,7 @@
     (async () => {
       for (let cycle = 0; cycle < cycles; cycle++) {
         phase.textContent = 'Breathe in';
-        circle.classList.add('mdt-inhale');
+        setScale(2.15);
         overlay.classList.remove('mdt-hold');
         circle.classList.remove('mdt-hold-circle');
         await wait(CONFIG.PHASE_MS);
@@ -1107,7 +1137,7 @@
         await wait(CONFIG.PHASE_MS);
 
         phase.textContent = 'Breathe out';
-        circle.classList.remove('mdt-inhale');
+        setScale(1);
         overlay.classList.remove('mdt-hold');
         circle.classList.remove('mdt-hold-circle');
         await wait(CONFIG.PHASE_MS);
