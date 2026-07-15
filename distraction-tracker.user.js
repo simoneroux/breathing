@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      2.8.0
+// @version      2.8.1
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
 // @author       Simon Roux
 // @homepageURL  https://github.com/simoneroux/breathing
@@ -737,6 +737,11 @@
     .mdt-p-title { font-size: 1.5rem !important; font-weight: 800 !important; margin: 0 !important; }
     .mdt-p-close { background: none !important; border: none !important; cursor: pointer !important;
       font-size: 1.5rem !important; color: inherit !important; opacity: 0.5 !important; padding: 0.25rem !important; }
+    .mdt-p-head-actions { display: flex !important; align-items: center !important; gap: 0.35rem !important; }
+    .mdt-p-gear { background: none !important; border: none !important; cursor: pointer !important;
+      font-size: 1.3rem !important; line-height: 1 !important; color: inherit !important;
+      opacity: 0.5 !important; padding: 0.25rem !important; font-family: inherit !important; }
+    .mdt-p-gear:hover { opacity: 1 !important; }
     .mdt-tabs { display: flex !important; gap: 4px !important; background: #e6e6ee !important;
       border-radius: 12px !important; padding: 4px !important; margin: 0 0 1rem !important; }
     .mdt-tab { flex: 1 !important; padding: 0.5rem 0 !important; text-align: center !important;
@@ -779,9 +784,22 @@
       font-weight: 700 !important; font-size: 0.85rem !important; font-family: inherit !important; }
     .mdt-p-signout:hover { background: #dcdce6 !important; }
 
-    /* ── Tracked-sites editor (bottom of the stats panel) ──────────────── */
-    .mdt-set-title { font-size: 1.05rem !important; font-weight: 800 !important;
-      margin: 2rem 0 0.75rem !important; }
+    /* ── Tracked-sites editor (modal reached from the panel gear) ──────── */
+    #mdt-modal-backdrop { position: fixed !important; inset: 0 !important;
+      z-index: 2147483647 !important; background: rgba(18, 18, 38, 0.55) !important;
+      -webkit-backdrop-filter: blur(3px) !important; backdrop-filter: blur(3px) !important;
+      display: flex !important; align-items: center !important; justify-content: center !important;
+      padding: calc(1rem + env(safe-area-inset-top, 0px)) 1rem
+               calc(1rem + env(safe-area-inset-bottom, 0px)) !important;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif !important; }
+    .mdt-modal { background: #f3f3f8 !important; color: #1c1c28 !important;
+      width: 100% !important; max-width: 440px !important; max-height: 85vh !important;
+      overflow-y: auto !important; border-radius: 20px !important;
+      padding: 1.25rem 1.25rem 1.5rem !important; text-align: left !important;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35) !important; }
+    .mdt-modal-head { display: flex !important; align-items: center !important;
+      justify-content: space-between !important; margin: 0 0 1rem !important; }
+    .mdt-modal-title { font-size: 1.25rem !important; font-weight: 800 !important; margin: 0 !important; }
     .mdt-set-row { background: #fff !important; border-radius: 14px !important;
       padding: 0.7rem 1rem !important; margin: 0 0 0.5rem !important;
       display: flex !important; align-items: center !important;
@@ -1011,7 +1029,12 @@
     const head = el('div', 'mdt-p-head');
     const closeBtn = el('button', 'mdt-p-close', '✕');
     closeBtn.onclick = () => panel.remove();
-    head.append(el('h2', 'mdt-p-title', 'Distractions'), closeBtn);
+    const sitesBtn = el('button', 'mdt-p-gear', '⚙');
+    sitesBtn.title = 'Manage tracked sites';
+    sitesBtn.onclick = openSitesModal;
+    const headActions = el('div', 'mdt-p-head-actions');
+    headActions.append(sitesBtn, closeBtn);
+    head.append(el('h2', 'mdt-p-title', 'Distractions'), headActions);
     wrap.appendChild(head);
 
     const tabs = el('div', 'mdt-tabs');
@@ -1025,11 +1048,12 @@
     nav.append(prevBtn, navLabel, nextBtn);
     wrap.appendChild(nav);
 
-    // Stats and settings live in separate containers so period changes
-    // rebuild only the stats without touching the tracked-sites editor.
+    // Stats and the account footer live in separate containers so period
+    // changes rebuild only the stats. The tracked-sites editor is a modal
+    // reached from the gear in the header (openSitesModal).
     const body = el('div');
-    const settings = el('div');
-    wrap.append(body, settings);
+    const footer = el('div');
+    wrap.append(body, footer);
 
     let periodType = 'week';
     let offset = 0; // 0 = current period, -1 = previous…
@@ -1062,11 +1086,62 @@
     prevBtn.onclick = () => { offset--; render(); };
     nextBtn.onclick = () => { if (offset < 0) { offset++; render(); } };
 
-    // ── Tracked sites editor + account footer ──────────────────────────
-    const renderSettings = async () => {
-      while (settings.firstChild) settings.removeChild(settings.firstChild);
+    // ── Account footer (which account this device syncs as + sign-out) ──
+    const renderFooter = async () => {
+      while (footer.firstChild) footer.removeChild(footer.firstChild);
+      if (!(await store.get('auth-session', null))) return;
+      // Local-only sign-out: deletes this device's tokens without revoking
+      // anything server-side — other devices stay signed in, and queued
+      // events survive to sync after the next sign-in.
+      const foot = el('div', 'mdt-set-foot');
+      const account = el('div', 'mdt-p-account', '');
+      const signOut = el('button', 'mdt-p-signout', 'Sign out on this device');
+      signOut.onclick = async () => {
+        await GM.deleteValue('auth-session');
+        location.reload();
+      };
+      foot.append(account, signOut);
+      footer.appendChild(foot);
+      // The email lives in the access token's JWT payload — decode it lazily
+      // (base64url), and leave the line blank if anything surprises us.
+      store.get('auth-session', null).then(session => {
+        try {
+          const b64 = session.access_token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+          const payload = JSON.parse(atob(b64));
+          if (payload.email) account.textContent = `Signed in as ${payload.email}`;
+        } catch {}
+      });
+    };
+
+    document.documentElement.appendChild(panel);
+    // Drain any locally queued events first so the numbers include this
+    // device's latest activity; render regardless of how the flush went.
+    flushQueue().then(render, render);
+    renderFooter();
+  }
+
+  // ── Tracked-sites editor — modal reached from the stats panel gear ───────
+  function openSitesModal() {
+    if (document.getElementById('mdt-modal-backdrop')) return;
+    const backdrop = el('div');
+    backdrop.id = 'mdt-modal-backdrop';
+    const modal = el('div', 'mdt-modal');
+    backdrop.appendChild(modal);
+    // Click the dimmed area outside the card to dismiss.
+    backdrop.onclick = e => { if (e.target === backdrop) backdrop.remove(); };
+
+    const head = el('div', 'mdt-modal-head');
+    const closeBtn = el('button', 'mdt-p-close', '✕');
+    closeBtn.onclick = () => backdrop.remove();
+    head.append(el('h2', 'mdt-modal-title', 'Tracked sites'), closeBtn);
+    modal.appendChild(head);
+
+    const listBox = el('div');
+    modal.appendChild(listBox);
+
+    const render = async () => {
+      while (listBox.firstChild) listBox.removeChild(listBox.firstChild);
       const signedIn = !!(await store.get('auth-session', null));
-      settings.appendChild(el('div', 'mdt-set-title', 'Tracked sites'));
       const list = await getTrackedSites();
       for (const s of [...list].sort((a, b) => a.host.localeCompare(b.host))) {
         const row = el('div', 'mdt-set-row');
@@ -1087,11 +1162,11 @@
             if (!confirm(`Stop tracking ${s.host}?`)) return;
             const ok = await removeTrackedSite(s.host);
             if (!ok) alert(`${s.host} is untracked on this device, but the change didn't reach the server — a later sync may bring it back.`);
-            renderSettings();
+            render();
           };
           row.appendChild(del);
         }
-        settings.appendChild(row);
+        listBox.appendChild(row);
       }
       if (signedIn) {
         const form = el('form', 'mdt-set-add');
@@ -1108,46 +1183,20 @@
           const ok = await addTrackedSite(h);
           if (!ok) alert(`${h} is tracked on this device, but the change didn't reach the server — it won't sync to other devices yet.`);
           input.value = '';
-          renderSettings();
+          render();
         };
         form.append(input, addBtn);
-        settings.appendChild(form);
-        settings.appendChild(el('div', 'mdt-set-note',
+        listBox.appendChild(form);
+        listBox.appendChild(el('div', 'mdt-set-note',
           'Changes apply on the next page load and sync to your other devices.'));
       } else {
-        settings.appendChild(el('div', 'mdt-set-note', 'Sign in to add or remove tracked sites.'));
+        listBox.appendChild(el('div', 'mdt-set-note', 'Sign in to add or remove tracked sites.'));
       }
-      // Account footer. Local-only sign-out: deletes this device's tokens
-      // without revoking anything server-side — other devices stay signed
-      // in, and queued events survive to sync after the next sign-in.
-      const foot = el('div', 'mdt-set-foot');
-      if (signedIn) {
-        const account = el('div', 'mdt-p-account', '');
-        const signOut = el('button', 'mdt-p-signout', 'Sign out on this device');
-        signOut.onclick = async () => {
-          await GM.deleteValue('auth-session');
-          location.reload();
-        };
-        foot.append(account, signOut);
-        // The email lives in the access token's JWT payload — decode it
-        // lazily (base64url), and leave the line blank if it surprises us.
-        store.get('auth-session', null).then(session => {
-          try {
-            const b64 = session.access_token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
-            const payload = JSON.parse(atob(b64));
-            if (payload.email) account.textContent = `Signed in as ${payload.email}`;
-          } catch {}
-        });
-      }
-      settings.appendChild(foot);
     };
 
-    document.documentElement.appendChild(panel);
-    // Drain any locally queued events first so the numbers include this
-    // device's latest activity; render regardless of how the flush went.
-    flushQueue().then(render, render);
+    document.documentElement.appendChild(backdrop);
     // Force a list sync so edits made on other devices show immediately.
-    refreshTrackedSites(0).then(renderSettings, renderSettings);
+    refreshTrackedSites(0).then(render, render);
   }
 
   // ── Re-lock bar — countdown + tap to re-lock; auto re-locks at expiry ────
