@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      2.4.0
+// @version      2.7.0
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
 // @author       Simon Roux
 // @homepageURL  https://github.com/simoneroux/breathing
@@ -47,6 +47,7 @@
 // @match        *://*.ebay.com/*
 // @match        *://ebay.com/*
 // @match        *://*.bestbuy.com/*
+// @match        https://simoneroux.github.io/breathing/*
 // @grant        GM.setValue
 // @grant        GM.getValue
 // @grant        GM.deleteValue
@@ -65,6 +66,13 @@
 // Supabase so it can be reviewed across devices in the in-page stats
 // panel (gear icon, top right of any tracked site).
 //
+// Auth happens on the hosted auth page (CONFIG.AUTH_PAGE, served from GitHub
+// Pages): passkey or password sign-in with real <input>s, so password
+// managers can autofill and WebAuthn ceremonies have a real origin. The page
+// hands the session to this script via the auth bridge at the bottom of this
+// file; GM storage is per-script and shared across all matched origins, so
+// one sign-in covers every tracked site on the device.
+//
 // Styling is injected exclusively via GM.addStyle (not a manually appended
 // <style> tag) and all visual state changes are done via classList toggles,
 // never inline style properties — this is deliberate, so the overlay still
@@ -77,12 +85,14 @@
   const CONFIG = {
     SUPABASE_URL: 'https://wqdktvfwbjumkgvcijux.supabase.co',
     SUPABASE_ANON_KEY: 'sb_publishable_P9w1-Ounnn1UYy3KXe8udA_qJw3Ng6q',
+    AUTH_PAGE: 'https://simoneroux.github.io/breathing/auth.html',
     // Optional device label for debugging cross-device sync ('' = auto-detect
     // from the platform). Leave as '' — auto-updates from @updateURL overwrite
     // any manual edits to this file, so per-device edits don't survive.
     DEVICE_NAME: '',
-    UNLOCK_MAX_MINS: 20,     // dial maximum on "Continue"
+    UNLOCK_MAX_MINS: 20,     // dial maximum on "Continue" (single session)
     UNLOCK_DEFAULT_MINS: 5,  // dial starting position
+    DAILY_UNLOCK_MAX_MINS: 60, // total unlock budget per day, all sites combined
     MORE_CYCLES_OPTIONS: [1, 2, 3, 4], // cycle-count choices for "More breathing"
     BREATH_CYCLES: 1,   // box-breathing cycles before the choice screen shows
     PHASE_MS: 5000,
@@ -161,9 +171,10 @@
     });
   }
 
-  // ── Auth: Supabase email/password session, refreshed via GoTrue ─────────
-  // Credentials are entered once per device via a native prompt() and never
-  // touch anything but Supabase's own /auth/v1/token endpoint.
+  // ── Auth: Supabase session, minted on the hosted auth page ──────────────
+  // The session originates from auth.html (passkey or password sign-in) and
+  // arrives via the auth bridge below; this script only ever refreshes it
+  // against Supabase's own /auth/v1/token endpoint.
   async function getSession() {
     let session = await store.get('auth-session', null);
     if (session && session.expires_at > Date.now() + 60000) return session;
@@ -189,46 +200,17 @@
     }
   }
 
-  let bootstrapping = null;
+  // Sign-in happens on the hosted auth page (CONFIG.AUTH_PAGE): password
+  // managers and passkeys both need a real origin with real <input>s, which
+  // prompt() can never provide. The page mints a session and hands it to
+  // this script via the auth bridge at the bottom of this file; until then,
+  // getSession() returns null and events simply queue locally.
   function bootstrapSession() {
-    // Guard against concurrent callers (e.g. flushQueue + main both need a
-    // session) triggering two prompt() dialogs at once.
-    if (bootstrapping) return bootstrapping;
-    bootstrapping = (async () => {
-      try {
-        const email = prompt('Distraction Tracker: sign in with your Supabase account email');
-        const password = email ? prompt('Password:') : null;
-        if (!email || !password) return null;
-        if (CONFIG.SUPABASE_URL.includes('YOUR-PROJECT') || CONFIG.SUPABASE_ANON_KEY.includes('YOUR-ANON-KEY')) {
-          alert('Distraction Tracker: fill in SUPABASE_URL and SUPABASE_ANON_KEY in the script CONFIG first.');
-          return null;
-        }
-        let res;
-        try {
-          res = await gmRequest({
-            method: 'POST',
-            url: `${CONFIG.SUPABASE_URL}/auth/v1/token?grant_type=password`,
-            headers: { apikey: CONFIG.SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
-            data: JSON.stringify({ email, password }),
-          });
-        } catch (err) {
-          alert(`Sign in failed: request did not reach Supabase.\n(${err?.message || err?.error || 'no network / blocked request'})\nCheck SUPABASE_URL in the script CONFIG.`);
-          return null;
-        }
-        let body = null;
-        try { body = JSON.parse(res.responseText); } catch {}
-        if (!body?.access_token) {
-          const reason = body?.error_description || body?.msg || body?.error
-            || `HTTP ${res.status}: ${String(res.responseText).slice(0, 200)}`;
-          alert(`Sign in failed: ${reason}`);
-          return null;
-        }
-        return await persistSession(body);
-      } finally {
-        bootstrapping = null;
-      }
-    })();
-    return bootstrapping;
+    return null;
+  }
+
+  function openAuthPage() {
+    window.open(CONFIG.AUTH_PAGE, '_blank');
   }
 
   async function persistSession(body) {
@@ -259,6 +241,14 @@
     return event;
   }
 
+  // 4xx the server will keep returning no matter how often we retry —
+  // malformed row, constraint violation, unknown column. Auth (401/403) and
+  // throttling/timeout (408/429) are excluded: those heal on their own.
+  function isPermanentReject(status) {
+    return status >= 400 && status < 500
+      && status !== 401 && status !== 403 && status !== 408 && status !== 429;
+  }
+
   let flushing = false;
   async function flushQueue() {
     if (flushing) return;
@@ -272,17 +262,51 @@
       while (true) {
         const queue = await store.get('pending-events', []);
         if (!queue.length) return;
-        if (!await syncEvents(queue, session)) return;
-        const sent = new Set(queue.map(e => e.id));
-        const latest = await store.get('pending-events', []);
-        await store.set('pending-events', latest.filter(e => !sent.has(e.id)));
+        const status = await postEvents(queue, session);
+        if (status >= 200 && status < 300) {
+          await removeFromQueue(queue.map(e => e.id));
+          continue;
+        }
+        if (!isPermanentReject(status)) return; // offline/auth/5xx: retry next load
+        // The server refuses the batch outright (e.g. an event type its
+        // check constraint doesn't know yet). Retrying wholesale would wedge
+        // the queue forever — the original stats outage — so sync events
+        // one-by-one and drop only the specific rows it permanently rejects.
+        for (const event of queue) {
+          const single = await postEvents([event], session);
+          if ((single >= 200 && single < 300) || isPermanentReject(single)) {
+            await removeFromQueue([event.id]);
+          } else {
+            return;
+          }
+        }
       }
     } finally {
       flushing = false;
     }
   }
 
-  async function syncEvents(events, session) {
+  async function removeFromQueue(ids) {
+    const sent = new Set(ids);
+    const latest = await store.get('pending-events', []);
+    await store.set('pending-events', latest.filter(e => !sent.has(e.id)));
+  }
+
+  // Returns the HTTP status, or 0 when the request never got a response.
+  async function postEvents(events, session) {
+    // PostgREST bulk inserts demand identical keys on every row (PGRST102
+    // "All object keys must match" otherwise) — pad the optional columns so
+    // a mixed attempt/breathing/proceeded batch can't wedge the whole queue.
+    const rows = events.map(e => ({
+      id: e.id,
+      host: e.host,
+      url: e.url ?? null,
+      event_type: e.event_type,
+      device: e.device ?? null,
+      cycles: e.cycles ?? null,
+      session_mins: e.session_mins ?? null,
+      client_created_at: e.client_created_at,
+    }));
     try {
       const res = await gmRequest({
         method: 'POST',
@@ -295,11 +319,11 @@
           // without needing an UPDATE RLS policy on the append-only table.
           Prefer: 'resolution=ignore-duplicates',
         },
-        data: JSON.stringify(events),
+        data: JSON.stringify(rows),
       });
-      return res.status >= 200 && res.status < 300;
+      return res.status;
     } catch {
-      return false;
+      return 0;
     }
   }
 
@@ -398,6 +422,103 @@
 
   async function unlockHost(mins) {
     await store.set(`unlock:${host}`, { until: Date.now() + mins * 60000 });
+    await addUnlockUsage(mins);
+  }
+
+  // ── Daily unlock budget (all sites combined, synced across devices) ─────
+  // Minutes are charged up front when a session starts ('proceeded' events
+  // carry them in session_mins); re-locking early via the bar refunds the
+  // unused whole minutes as a 'relocked' event. Spent budget is
+  //   sum(proceeded) − sum(relocked) since local midnight
+  // computed from Supabase (all devices) plus this device's unsynced queue,
+  // with a device-local ledger as the offline floor. The ledger key is the
+  // local calendar date, so the budget resets at local midnight.
+  function todayKey() {
+    const d = new Date();
+    return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+  }
+
+  function startOfToday() {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }
+
+  async function localUnlockUsedToday() {
+    const ledger = await store.get('unlock-ledger', null);
+    return ledger && ledger.date === todayKey() ? ledger.mins : 0;
+  }
+
+  async function addUnlockUsage(mins) {
+    const used = await localUnlockUsedToday();
+    await store.set('unlock-ledger', { date: todayKey(), mins: Math.max(0, used + mins) });
+  }
+
+  function budgetDelta(e) {
+    if (e.event_type === 'proceeded') return e.session_mins || 0;
+    if (e.event_type === 'relocked') return -(e.session_mins || 0);
+    return 0;
+  }
+
+  // One remote fetch per page load (re-keyed at midnight); everything this
+  // device does afterwards is covered by the ledger/pending-queue terms.
+  // Resolves null when signed out or the request fails.
+  let remoteUsedMemo = null;
+  function remoteUnlockUsedToday() {
+    if (remoteUsedMemo?.day !== todayKey()) {
+      remoteUsedMemo = {
+        day: todayKey(),
+        promise: (async () => {
+          try {
+            const session = await getSession();
+            if (!session) return null;
+            const url = `${CONFIG.SUPABASE_URL}/rest/v1/events`
+              + `?event_type=in.(proceeded,relocked)`
+              + `&client_created_at=gte.${encodeURIComponent(startOfToday().toISOString())}`
+              + `&select=event_type,session_mins&limit=1000`;
+            const res = await gmRequest({
+              method: 'GET', url,
+              headers: { apikey: CONFIG.SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}` },
+            });
+            const rows = JSON.parse(res.responseText);
+            if (!Array.isArray(rows)) return null;
+            return Math.max(0, rows.reduce((sum, r) => sum + budgetDelta(r), 0));
+          } catch {
+            return null;
+          }
+        })(),
+      };
+    }
+    return remoteUsedMemo.promise;
+  }
+
+  // Today's budget movement still waiting in the offline queue — by
+  // definition not yet reflected in the remote sum.
+  async function pendingUnlockUsedToday() {
+    const queue = await store.get('pending-events', []);
+    const start = startOfToday();
+    return queue.reduce(
+      (sum, e) => new Date(e.client_created_at) >= start ? sum + budgetDelta(e) : sum,
+      0,
+    );
+  }
+
+  async function unlockUsedToday() {
+    const local = await localUnlockUsedToday();
+    // Cap the wait: budget checks gate UI renders, and the remote fetch is
+    // prefetched in main() so this normally resolves instantly.
+    const remote = await Promise.race([
+      remoteUnlockUsedToday(),
+      new Promise(resolve => setTimeout(() => resolve(null), 2500)),
+    ]);
+    if (remote == null) return local;
+    // max(): the remote sum already contains this device's synced events, so
+    // the terms overlap — the local ledger only wins while sync lags behind.
+    return Math.max(local, remote + await pendingUnlockUsedToday());
+  }
+
+  async function unlockRemainingToday() {
+    return Math.max(0, CONFIG.DAILY_UNLOCK_MAX_MINS - await unlockUsedToday());
   }
 
   async function localStats() {
@@ -444,31 +565,41 @@
       margin: 0 0 0.75rem !important; line-height: 1.3 !important; max-width: 480px !important; }
     .mdt-sub { font-size: 0.95rem !important; opacity: 0.7 !important; margin: 0 0 1.75rem !important;
       max-width: 420px !important; line-height: 1.45 !important; }
-    /* Full-page breathing stage — sized like index.html's .breather (55vmin) */
-    .mdt-stage { position: relative !important;
+    /* Full-page breathing stage — sized like index.html's .breather (55vmin).
+       Stage internals are prefixed with #mdt-overlay: !important ties are
+       broken by specificity, and some sites (Lapresse) ship high-specificity
+       resets that beat bare single-class selectors. The circle is also
+       self-centering (absolute + translate baked into both transform states)
+       so it never depends on the parent's flex properties surviving. */
+    #mdt-overlay .mdt-stage { position: relative !important;
       width: clamp(200px, 52vmin, 480px) !important; height: clamp(200px, 52vmin, 480px) !important;
       margin: clamp(0.5rem, 2.5vh, 1.5rem) auto clamp(1.4rem, 4vh, 2.5rem) !important;
       display: flex !important; align-items: center !important; justify-content: center !important; }
-    .mdt-square { position: absolute !important; inset: 0 !important; border: 1.5px solid rgba(255,255,255,0.3) !important;
-      border-radius: 4px !important; }
+    #mdt-overlay .mdt-square { position: absolute !important; inset: 0 !important; border: 1.5px solid rgba(255,255,255,0.3) !important;
+      border-radius: 4px !important; margin: 0 !important; }
     /* rect() offset-paths always start at the top-left corner; rotating the
        full-size track by -90deg puts the start at the LOWER-LEFT corner and
        sends the dot up the left edge as "Breathe in" begins. */
-    .mdt-dot-track { position: absolute !important; inset: 0 !important;
-      transform: rotate(-90deg) !important; pointer-events: none !important; }
-    .mdt-dot { position: absolute !important; width: 14px !important; height: 14px !important;
+    #mdt-overlay .mdt-dot-track { position: absolute !important; inset: 0 !important;
+      transform: rotate(-90deg) !important; transform-origin: center !important;
+      margin: 0 !important; pointer-events: none !important; }
+    #mdt-overlay .mdt-dot { position: absolute !important; width: 14px !important; height: 14px !important;
       background: #fff !important; border-radius: 50% !important;
       box-shadow: 0 0 12px rgba(255,255,255,0.9) !important;
-      top: -7px !important; left: -7px !important;
+      top: -7px !important; left: -7px !important; margin: 0 !important;
       /* sharp-cornered path: with rounded corners the edge lengths become
          unequal, so the dot drifts off the 5s phase marks */
       offset-path: rect(0% 100% 100% 0%) !important; opacity: 0.45 !important; }
-    .mdt-dot.mdt-running { opacity: 1 !important; animation: mdt-follow ${CONFIG.PHASE_MS * 4}ms linear infinite !important; }
+    #mdt-overlay .mdt-dot.mdt-running { opacity: 1 !important; animation: mdt-follow ${CONFIG.PHASE_MS * 4}ms linear infinite !important; }
     @keyframes mdt-follow { from { offset-distance: 0%; } to { offset-distance: 100%; } }
-    .mdt-circle { width: 44% !important; height: 44% !important; background: rgba(255,255,255,0.25) !important;
-      border-radius: 50% !important; transition: transform 5s cubic-bezier(0.4,0,0.2,1), background 1.5s ease !important; }
-    .mdt-circle.mdt-inhale { transform: scale(2.15) !important; }
-    .mdt-circle.mdt-hold-circle { background: rgba(30,36,64,0.45) !important; }
+    #mdt-overlay .mdt-circle { position: absolute !important; left: 50% !important; top: 50% !important;
+      width: 44% !important; height: 44% !important; margin: 0 !important;
+      background: rgba(255,255,255,0.25) !important; border-radius: 50% !important;
+      transform: translate(-50%, -50%) scale(1) !important;
+      transform-origin: center !important;
+      transition: transform 5s cubic-bezier(0.4,0,0.2,1), background 1.5s ease !important; }
+    #mdt-overlay .mdt-circle.mdt-inhale { transform: translate(-50%, -50%) scale(2.15) !important; }
+    #mdt-overlay .mdt-circle.mdt-hold-circle { background: rgba(30,36,64,0.45) !important; }
     .mdt-phase { font-size: clamp(1.1rem, 2.8vw, 1.5rem) !important; font-weight: 500 !important;
       margin: 0 0 2rem !important; min-height: 1.4em !important; }
     .mdt-big-num { font-size: clamp(2.6rem, 9vmin, 4.2rem) !important; font-weight: 800 !important;
@@ -484,7 +615,7 @@
     @media (max-height: 600px) {
       .mdt-big-num { font-size: 2rem !important; }
       .mdt-stats { margin-bottom: 0.75rem !important; line-height: 1.4 !important; }
-      .mdt-stage { width: clamp(150px, 48vh, 300px) !important; height: clamp(150px, 48vh, 300px) !important;
+      #mdt-overlay .mdt-stage { width: clamp(150px, 48vh, 300px) !important; height: clamp(150px, 48vh, 300px) !important;
         margin: 0.25rem auto 1rem !important; }
       .mdt-phase { margin-bottom: 1rem !important; }
       .mdt-title { font-size: 1.2rem !important; }
@@ -514,6 +645,8 @@
     .mdt-dial { display: block !important; width: min(64vw, 280px) !important; height: auto !important;
       margin: 0 auto 1.5rem !important; touch-action: none !important; cursor: pointer !important;
       -webkit-tap-highlight-color: transparent !important; }
+    .mdt-budget { font-size: 0.85rem !important; opacity: 0.7 !important;
+      margin: -0.75rem 0 1.25rem !important; font-variant-numeric: tabular-nums !important; }
 
     /* ── Re-lock bar (shown while a site is unlocked) ───────────────────── */
     #mdt-relock { position: fixed !important; top: 0 !important; left: 0 !important; right: 0 !important;
@@ -579,6 +712,17 @@
     .mdt-p-note { text-align: center !important; font-size: 0.85rem !important;
       opacity: 0.6 !important; margin: 1.2rem 0 0 !important; }
     .mdt-p-status { text-align: center !important; opacity: 0.55 !important; padding: 2.5rem 0 !important; }
+    .mdt-p-signin { margin-top: 0.9rem !important; padding: 0.65rem 1.5rem !important;
+      border: none !important; border-radius: 999px !important; cursor: pointer !important;
+      background: linear-gradient(135deg, #4d5890, #3f4877) !important; color: #fff !important;
+      font-weight: 700 !important; font-size: 0.9rem !important; font-family: inherit !important; }
+    .mdt-p-account { font-size: 0.8rem !important; opacity: 0.55 !important;
+      margin: 0 0 0.6rem !important; min-height: 1em !important; }
+    .mdt-p-signout { padding: 0.55rem 1.3rem !important; border: none !important;
+      border-radius: 999px !important; cursor: pointer !important;
+      background: #e6e6ee !important; color: #1c1c28 !important;
+      font-weight: 700 !important; font-size: 0.85rem !important; font-family: inherit !important; }
+    .mdt-p-signout:hover { background: #dcdce6 !important; }
   `);
 
   function el(tag, className, text) {
@@ -659,7 +803,7 @@
     if (!session) return null;
     const headers = { apikey: CONFIG.SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}` };
     const eventsUrl = `${CONFIG.SUPABASE_URL}/rest/v1/events`
-      + `?select=host,event_type,client_created_at,cycles&order=client_created_at.desc&limit=1000`
+      + `?select=host,event_type,client_created_at,cycles,session_mins&order=client_created_at.desc&limit=1000`
       + `&client_created_at=gte.${encodeURIComponent(start.toISOString())}`
       + `&client_created_at=lt.${encodeURIComponent(end.toISOString())}`;
     const [evRes, siteRes] = await Promise.all([
@@ -673,9 +817,10 @@
     const cfg = Object.fromEntries(sites.map(s => [s.host, s]));
     const perSite = {};
     for (const e of events) {
-      const s = perSite[e.host] ??= { host: e.host, attempts: 0, proceeded: 0, breaths: 0, list: [] };
+      const s = perSite[e.host] ??= { host: e.host, attempts: 0, proceeded: 0, breaths: 0, unlockedMins: 0, list: [] };
       if (e.event_type === 'attempt') s.attempts++;
-      if (e.event_type === 'proceeded') s.proceeded++;
+      if (e.event_type === 'proceeded') { s.proceeded++; s.unlockedMins += e.session_mins || 0; }
+      if (e.event_type === 'relocked') s.unlockedMins -= e.session_mins || 0;
       if (e.event_type === 'breathing') s.breaths += e.cycles || 1;
       s.list.push(e);
     }
@@ -683,6 +828,7 @@
       const avgMins = cfg[s.host]?.avg_minutes_saved ?? 5;
       return {
         ...s,
+        unlockedMins: Math.max(0, s.unlockedMins), // refunds can't go below zero
         prevented: countPrevented(s.attempts, s.proceeded),
         displayName: cfg[s.host]?.display_name || s.host,
         minutesSaved: savedSessions(list, avgMins) * avgMins,
@@ -694,8 +840,9 @@
         prevented: t.prevented + s.prevented,
         minutes: t.minutes + s.minutesSaved,
         breaths: t.breaths + s.breaths,
+        unlockedMins: t.unlockedMins + s.unlockedMins,
       }),
-      { attempts: 0, prevented: 0, minutes: 0, breaths: 0 },
+      { attempts: 0, prevented: 0, minutes: 0, breaths: 0, unlockedMins: 0 },
     );
     const annual = {
       prevented: Math.round(totals.prevented / windowDays * 365),
@@ -708,7 +855,12 @@
     // Everything below the header + tabs + nav is rebuilt per period change.
     [...wrap.querySelectorAll('.mdt-p-hero, .mdt-p-site, .mdt-p-note, .mdt-p-status')].forEach(n => n.remove());
     if (!data) {
-      wrap.appendChild(el('div', 'mdt-p-status', 'Couldn’t load stats — sign in on a tracked site first.'));
+      const box = el('div', 'mdt-p-status', 'Not signed in — activity is only stored on this device.');
+      box.appendChild(document.createElement('br'));
+      const btn = el('button', 'mdt-p-signin', 'Sign in to sync');
+      btn.onclick = openAuthPage;
+      box.appendChild(btn);
+      wrap.appendChild(box);
       return;
     }
     const { rows, totals, annual } = aggregateStats(data.events, data.sites, windowDays);
@@ -724,13 +876,18 @@
     heroPrevented.append(el('div', 'mdt-p-num', `${totals.prevented}×`), el('div', 'mdt-p-label', 'Prevented'));
     const heroSaved = el('div');
     heroSaved.append(el('div', 'mdt-p-num', formatDuration(totals.minutes)), el('div', 'mdt-p-label', 'Time saved'));
+    const heroUnlocked = el('div');
+    heroUnlocked.append(
+      el('div', 'mdt-p-num', formatDuration(totals.unlockedMins)),
+      el('div', 'mdt-p-label', `Unlocked (${CONFIG.DAILY_UNLOCK_MAX_MINS} min/day cap)`),
+    );
     const cycleSecs = CONFIG.PHASE_MS * 4 / 1000;
     const heroBreaths = el('div');
     heroBreaths.append(
       el('div', 'mdt-p-num', formatDuration(totals.breaths * cycleSecs / 60)),
       el('div', 'mdt-p-label', `Breathing (${totals.breaths} cycles)`),
     );
-    hero.append(heroAttempts, heroPrevented, heroSaved, heroBreaths);
+    hero.append(heroAttempts, heroPrevented, heroSaved, heroUnlocked, heroBreaths);
     wrap.appendChild(hero);
 
     for (const s of rows) {
@@ -753,6 +910,30 @@
 
     wrap.appendChild(el('div', 'mdt-p-note',
       `At this rate: ${annual.prevented}× prevented · ${formatDuration(annual.minutes)} saved per year`));
+
+    // Signed-in footer: which account this device syncs as, plus a local
+    // sign-out. Wrapped in .mdt-p-note so period-change re-renders (which
+    // clear that class) rebuild it too. Local-only: deletes this device's
+    // tokens without revoking anything server-side — other devices stay
+    // signed in, and queued events survive to sync after the next sign-in.
+    const foot = el('div', 'mdt-p-note');
+    const account = el('div', 'mdt-p-account', '');
+    const signOut = el('button', 'mdt-p-signout', 'Sign out on this device');
+    signOut.onclick = async () => {
+      await GM.deleteValue('auth-session');
+      location.reload();
+    };
+    foot.append(account, signOut);
+    wrap.appendChild(foot);
+    // The email lives in the access token's JWT payload — decode it lazily
+    // (base64url), and leave the line blank if anything about it surprises us.
+    store.get('auth-session', null).then(session => {
+      try {
+        const b64 = session.access_token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+        const payload = JSON.parse(atob(b64));
+        if (payload.email) account.textContent = `Signed in as ${payload.email}`;
+      } catch {}
+    });
   }
 
   function openStatsPanel() {
@@ -811,7 +992,9 @@
     nextBtn.onclick = () => { if (offset < 0) { offset++; render(); } };
 
     document.documentElement.appendChild(panel);
-    render();
+    // Drain any locally queued events first so the numbers include this
+    // device's latest activity; render regardless of how the flush went.
+    flushQueue().then(render, render);
   }
 
   // ── Re-lock bar — countdown + tap to re-lock; auto re-locks at expiry ────
@@ -820,6 +1003,8 @@
     if (document.getElementById('mdt-relock')) return;
     const bar = el('div');
     bar.id = 'mdt-relock';
+    // Static for the whole session: minutes were charged up front at unlock.
+    const remainingToday = await unlockRemainingToday();
     const update = async () => {
       const unlock = await store.get(`unlock:${host}`, null);
       const remaining = unlock ? unlock.until - Date.now() : 0;
@@ -832,10 +1017,20 @@
       }
       const m = Math.floor(remaining / 60000);
       const s = String(Math.floor((remaining % 60000) / 1000)).padStart(2, '0');
-      bar.textContent = `🔓 ${siteName} unlocked · ${m}:${s} left · tap to re-lock`;
+      bar.textContent = `🔓 ${siteName} unlocked · ${m}:${s} left · ${remainingToday} min left today · tap to re-lock`;
     };
     bar.onclick = async () => {
       clearInterval(relockInterval);
+      // Refund the unused whole minutes — re-locking early shouldn't cost
+      // budget the session never consumed. The 'relocked' event carries the
+      // refund to Supabase so other devices subtract it too; if the reload
+      // cancels the in-flight sync, the event survives in the pending queue.
+      const unlock = await store.get(`unlock:${host}`, null);
+      const refund = unlock ? Math.floor(Math.max(0, unlock.until - Date.now()) / 60000) : 0;
+      if (refund) {
+        await addUnlockUsage(-refund);
+        await logEvent('relocked', { session_mins: refund });
+      }
       await GM.deleteValue(`unlock:${host}`);
       location.reload();
     };
@@ -936,8 +1131,9 @@
     setTimeout(() => { location.href = 'about:blank'; }, 250);
   }
 
-  function showChoice(ui, stats, onLeave, onMore) {
+  async function showChoice(ui, stats, onLeave, onMore) {
     const { card } = ui;
+    const remainingToday = await unlockRemainingToday();
     while (card.firstChild) card.removeChild(card.firstChild);
     card.append(
       ...buildStatHeader(stats),
@@ -945,14 +1141,25 @@
     );
 
     // One Sec hierarchy: backing out is the highlighted action, continuing is
-    // a quiet text link at the bottom.
+    // a quiet text link at the bottom — and only while daily budget remains.
     const leaveBtn = el('button', 'mdt-btn mdt-btn-primary', "I don't want to open this");
     leaveBtn.onclick = abandonSite;
     const moreBtn = el('button', 'mdt-btn mdt-btn-secondary', 'More breathing');
     moreBtn.onclick = () => showCyclePicker(ui, stats, onLeave, onMore);
-    const continueBtn = el('button', 'mdt-btn-ghost', `Continue to ${siteName}`);
-    continueBtn.onclick = () => showTimerPicker(ui, stats, onLeave, onMore);
-    card.append(leaveBtn, moreBtn, continueBtn);
+    card.append(leaveBtn, moreBtn);
+    if (remainingToday >= 1) {
+      const continueBtn = el('button', 'mdt-btn-ghost', `Continue to ${siteName}`);
+      continueBtn.onclick = () => showTimerPicker(ui, stats, onLeave, onMore);
+      card.appendChild(continueBtn);
+    } else {
+      card.appendChild(el('div', 'mdt-budget',
+        `Daily unlock limit reached (${CONFIG.DAILY_UNLOCK_MAX_MINS} min) — back tomorrow.`));
+    }
+    if (!stats.signedIn) {
+      const signIn = el('button', 'mdt-btn-ghost', 'Not syncing — sign in');
+      signIn.onclick = openAuthPage;
+      card.appendChild(signIn);
+    }
   }
 
   function svgEl(tag, attrs) {
@@ -982,8 +1189,9 @@
     svg.append(track, prog, knob, label);
 
     let mins = initialMins;
+    const span = Math.max(1, maxMins - 1); // maxMins can be 1 when the daily budget is nearly spent
     const render = () => {
-      const t = (mins - 1) / (maxMins - 1);
+      const t = (mins - 1) / span;
       prog.setAttribute('stroke-dasharray', `${L * t} ${L + 30}`);
       const [kx, ky] = pt(START + SWEEP * t);
       knob.setAttribute('cx', kx);
@@ -998,7 +1206,7 @@
       let rel = (Math.atan2(y, x) * 180 / Math.PI - START + 360) % 360;
       // pointer in the bottom gap: snap to the nearer end of the arc
       if (rel > SWEEP) rel = (rel - SWEEP < (360 - SWEEP) / 2) ? SWEEP : 0;
-      mins = Math.max(1, Math.min(maxMins, Math.round(1 + rel / SWEEP * (maxMins - 1))));
+      mins = Math.max(1, Math.min(maxMins, Math.round(1 + rel / SWEEP * span)));
       render();
     };
     let dragging = false;
@@ -1009,15 +1217,21 @@
     return svg;
   }
 
-  function showTimerPicker(ui, stats, onLeave, onMore) {
+  async function showTimerPicker(ui, stats, onLeave, onMore) {
     const { card } = ui;
+    const remainingToday = await unlockRemainingToday();
     while (card.firstChild) card.removeChild(card.firstChild);
+    if (remainingToday < 1) { showChoice(ui, stats, onLeave, onMore); return; }
     card.append(
       el('div', 'mdt-title', `How much time do you need on ${siteName}?`),
       el('div', 'mdt-sub', 'Be realistic — give yourself the time you need to complete the task you have in mind.'),
     );
-    let chosen = CONFIG.UNLOCK_DEFAULT_MINS;
-    card.appendChild(buildDial(CONFIG.UNLOCK_DEFAULT_MINS, CONFIG.UNLOCK_MAX_MINS, m => { chosen = m; }));
+    // The dial can never grant more than what's left of the daily budget.
+    const dialMax = Math.min(CONFIG.UNLOCK_MAX_MINS, remainingToday);
+    let chosen = Math.min(CONFIG.UNLOCK_DEFAULT_MINS, dialMax);
+    card.appendChild(buildDial(chosen, dialMax, m => { chosen = m; }));
+    card.appendChild(el('div', 'mdt-budget',
+      `${remainingToday} of your ${CONFIG.DAILY_UNLOCK_MAX_MINS} unlock minutes left today`));
 
     const leaveBtn = el('button', 'mdt-btn mdt-btn-primary', `I don't want to open ${siteName}`);
     leaveBtn.onclick = abandonSite;
@@ -1059,13 +1273,18 @@
 
   async function main() {
     flushQueue(); // opportunistic background sync, never blocks rendering
+    remoteUnlockUsedToday(); // prefetch the cross-device budget — resolved by
+                             // the time any budget-gated screen needs it
     addGear();    // stats entry point, present locked or unlocked
 
     if (await isUnlocked()) { showRelockBar(); return; } // site loads normally
 
     hidePage();
     const ui = buildOverlay();
-    let currentStats = await localStats();
+    let currentStats = {
+      ...await localStats(),
+      signedIn: !!(await store.get('auth-session', null)),
+    };
     const attemptEvent = await logEvent('attempt');
     recordLocalAttempt();
 
@@ -1091,7 +1310,7 @@
     const session = await getSession();
     const fresh = session && await fetchRemoteStats(session, attemptEvent.id);
     if (fresh) {
-      currentStats = fresh;
+      currentStats = { ...fresh, signedIn: true };
       if (!document.getElementById('mdt-overlay')) return;
       if (mode === 'choice' && ui.card.querySelector('.mdt-stats')) {
         renderChoice();
@@ -1103,7 +1322,40 @@
     }
   }
 
-  main();
+  // ── Auth bridge: runs only on the hosted auth page ───────────────────────
+  // auth.html signs in (passkey or password), writes the session JSON into
+  // #mdt-session-json and fires 'mdt-session-ready'; this branch stores it in
+  // GM storage — shared across every matched site on this device — flushes
+  // any locally queued events, and confirms back with 'mdt-session-stored'
+  // so the page can show "Synced ✓". The ping/pong pair lets the page detect
+  // whether the userscript is active on its domain at all.
+  function installAuthBridge() {
+    const adopt = async () => {
+      const node = document.getElementById('mdt-session-json');
+      if (!node?.textContent) return;
+      try {
+        const session = JSON.parse(node.textContent);
+        if (!session?.access_token || !session?.refresh_token) return;
+        await store.set('auth-session', session);
+        flushQueue();
+        document.dispatchEvent(new Event('mdt-session-stored'));
+      } catch {}
+    };
+    document.addEventListener('mdt-session-ready', adopt);
+    document.addEventListener('mdt-ping', () => document.dispatchEvent(new Event('mdt-pong')));
+    // Announce on load too: if injection happened after the page's first
+    // ping (late document-start, first visit to the domain), this clears the
+    // "userscript not detected" banner without waiting for the next ping.
+    document.dispatchEvent(new Event('mdt-pong'));
+    if (document.readyState !== 'loading') adopt();
+    else document.addEventListener('DOMContentLoaded', adopt);
+  }
+
+  if (location.hostname === 'simoneroux.github.io') {
+    installAuthBridge();
+  } else {
+    main();
+  }
   // No MutationObserver needed for the body-not-yet-parsed case: the
   // `.mdt-hidden-page > body` rule above is a live CSS selector, so it
   // applies automatically the instant body is inserted, however late.

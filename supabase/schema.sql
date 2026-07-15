@@ -11,10 +11,10 @@ create table events (
   user_id uuid not null default auth.uid() references auth.users(id),
   host text not null,
   url text,
-  event_type text not null check (event_type in ('attempt', 'proceeded', 'abandoned', 'breathing')),
+  event_type text not null check (event_type in ('attempt', 'proceeded', 'abandoned', 'breathing', 'relocked')),
   device text,
   cycles int,        -- 'breathing' events: number of box-breathing cycles completed
-  session_mins int,  -- 'proceeded' events: unlock duration the user picked
+  session_mins int,  -- 'proceeded': unlock duration picked; 'relocked': unused minutes refunded by an early re-lock
   client_created_at timestamptz not null,
   created_at timestamptz not null default now()
 );
