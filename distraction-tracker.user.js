@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      2.8.1
+// @version      2.9.0
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
 // @author       Simon Roux
 // @homepageURL  https://github.com/simoneroux/breathing
@@ -120,12 +120,15 @@
     try {
       const res = await gmRequest({
         method: 'GET',
-        url: `${CONFIG.SUPABASE_URL}/rest/v1/sites?select=host,display_name`,
+        // avg_minutes_saved rides along so a host edit (delete + reinsert of
+        // the primary key) can carry the tuned heuristic to the new row.
+        url: `${CONFIG.SUPABASE_URL}/rest/v1/sites?select=host,display_name,avg_minutes_saved`,
         headers: { apikey: CONFIG.SUPABASE_ANON_KEY },
       });
       const rows = JSON.parse(res.responseText);
       if (Array.isArray(rows) && rows.length) {
-        await store.set('tracked-sites', rows.map(r => ({ host: r.host, display_name: r.display_name })));
+        await store.set('tracked-sites', rows.map(
+          r => ({ host: r.host, display_name: r.display_name, avg_minutes_saved: r.avg_minutes_saved })));
         await store.set('tracked-sites-synced-at', Date.now());
       }
     } catch {}
@@ -151,13 +154,23 @@
     return /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/.test(v) ? v : null;
   }
 
-  // Add/remove push straight to Supabase (the panel gates both behind
-  // sign-in) and update the local cache immediately so the change applies
-  // on this device's next page load without waiting for a sync.
-  async function addTrackedSite(newHost) {
+  // Add/remove/update push straight to Supabase (the panel gates all three
+  // behind sign-in) and update the local cache immediately so the change
+  // applies on this device's next page load without waiting for a sync.
+  async function siteHeaders(session, extra = {}) {
+    return {
+      apikey: CONFIG.SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${session.access_token}`,
+      'Content-Type': 'application/json',
+      ...extra,
+    };
+  }
+
+  async function addTrackedSite(newHost, name) {
+    const display = (name || '').trim() || newHost;
     const list = await getTrackedSites();
     if (!list.some(s => s.host === newHost)) {
-      await store.set('tracked-sites', [...list, { host: newHost, display_name: newHost }]);
+      await store.set('tracked-sites', [...list, { host: newHost, display_name: display }]);
     }
     const session = await getSession();
     if (!session) return false;
@@ -165,15 +178,53 @@
       const res = await gmRequest({
         method: 'POST',
         url: `${CONFIG.SUPABASE_URL}/rest/v1/sites`,
-        headers: {
-          apikey: CONFIG.SUPABASE_ANON_KEY,
-          Authorization: `Bearer ${session.access_token}`,
-          'Content-Type': 'application/json',
-          Prefer: 'resolution=ignore-duplicates',
-        },
-        data: JSON.stringify([{ host: newHost, display_name: newHost }]),
+        headers: await siteHeaders(session, { Prefer: 'resolution=ignore-duplicates' }),
+        data: JSON.stringify([{ host: newHost, display_name: display }]),
       });
       return res.status >= 200 && res.status < 300;
+    } catch {
+      return false;
+    }
+  }
+
+  async function updateTrackedSite(oldHost, newHost, newName) {
+    const list = await getTrackedSites();
+    const entry = list.find(s => s.host === oldHost) || {};
+    const updated = { ...entry, host: newHost, display_name: newName };
+    await store.set('tracked-sites', list.map(s => (s.host === oldHost ? updated : s)));
+    const session = await getSession();
+    if (!session) return false;
+    try {
+      if (newHost === oldHost) {
+        const res = await gmRequest({
+          method: 'PATCH',
+          url: `${CONFIG.SUPABASE_URL}/rest/v1/sites?host=eq.${encodeURIComponent(oldHost)}`,
+          headers: await siteHeaders(session),
+          data: JSON.stringify({ display_name: newName }),
+        });
+        return res.status >= 200 && res.status < 300;
+      }
+      // Host is the primary key: insert the new row first — carrying the old
+      // row's avg_minutes_saved so the tuned heuristic survives — and delete
+      // the old one only once the insert landed (no window with the site
+      // missing server-side).
+      const ins = await gmRequest({
+        method: 'POST',
+        url: `${CONFIG.SUPABASE_URL}/rest/v1/sites`,
+        headers: await siteHeaders(session, { Prefer: 'resolution=ignore-duplicates' }),
+        data: JSON.stringify([{
+          host: newHost,
+          display_name: newName,
+          ...(entry.avg_minutes_saved != null ? { avg_minutes_saved: entry.avg_minutes_saved } : {}),
+        }]),
+      });
+      if (!(ins.status >= 200 && ins.status < 300)) return false;
+      const del = await gmRequest({
+        method: 'DELETE',
+        url: `${CONFIG.SUPABASE_URL}/rest/v1/sites?host=eq.${encodeURIComponent(oldHost)}`,
+        headers: await siteHeaders(session),
+      });
+      return del.status >= 200 && del.status < 300;
     } catch {
       return false;
     }
@@ -515,14 +566,18 @@
     return 0;
   }
 
-  // One remote fetch per page load (re-keyed at midnight); everything this
-  // device does afterwards is covered by the ledger/pending-queue terms.
+  // One remote fetch per page load (re-keyed at midnight), split into this
+  // device's rows vs every other device's — by device label, so two devices
+  // sharing a label (e.g. twin "Mac Chrome" setups) should pin distinct
+  // CONFIG.DEVICE_NAMEs. A failed fetch is NOT memoized: the next budget
+  // check retries instead of running ledger-only until midnight.
   // Resolves null when signed out or the request fails.
   let remoteUsedMemo = null;
   function remoteUnlockUsedToday() {
     if (remoteUsedMemo?.day !== todayKey()) {
+      const day = todayKey();
       remoteUsedMemo = {
-        day: todayKey(),
+        day,
         promise: (async () => {
           try {
             const session = await getSession();
@@ -530,18 +585,23 @@
             const url = `${CONFIG.SUPABASE_URL}/rest/v1/events`
               + `?event_type=in.(proceeded,relocked)`
               + `&client_created_at=gte.${encodeURIComponent(startOfToday().toISOString())}`
-              + `&select=event_type,session_mins&limit=1000`;
+              + `&select=event_type,session_mins,device&limit=1000`;
             const res = await gmRequest({
               method: 'GET', url,
               headers: { apikey: CONFIG.SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}` },
             });
             const rows = JSON.parse(res.responseText);
             if (!Array.isArray(rows)) return null;
-            return Math.max(0, rows.reduce((sum, r) => sum + budgetDelta(r), 0));
+            const mine = deviceLabel();
+            const sum = which => Math.max(0, rows.filter(which).reduce((t, r) => t + budgetDelta(r), 0));
+            return { own: sum(r => r.device === mine), others: sum(r => r.device !== mine) };
           } catch {
             return null;
           }
-        })(),
+        })().then(v => {
+          if (v == null && remoteUsedMemo?.day === day) remoteUsedMemo = null;
+          return v;
+        }),
       };
     }
     return remoteUsedMemo.promise;
@@ -567,9 +627,15 @@
       new Promise(resolve => setTimeout(() => resolve(null), 2500)),
     ]);
     if (remote == null) return local;
-    // max(): the remote sum already contains this device's synced events, so
-    // the terms overlap — the local ledger only wins while sync lags behind.
-    return Math.max(local, remote + await pendingUnlockUsedToday());
+    // The ledger is authoritative for this device's own usage: it's charged
+    // up front and refunded the instant a session is re-locked, whereas the
+    // server's copy of our own events can race the queue flush — a remote
+    // snapshot taken mid-flush misses a just-synced refund that the queue
+    // no longer holds, which used to swallow refunds until the next reload.
+    // The server's own-device rows only fill in when the ledger is empty
+    // (fresh GM storage mid-day).
+    const own = local > 0 ? local : remote.own + await pendingUnlockUsedToday();
+    return remote.others + own;
   }
 
   async function unlockRemainingToday() {
@@ -720,13 +786,25 @@
     #mdt-gear { position: fixed !important; top: calc(10px + env(safe-area-inset-top, 0px)) !important;
       right: 12px !important; z-index: 2147483647 !important;
       width: 34px !important; height: 34px !important; border-radius: 50% !important;
-      background: rgba(30, 30, 60, 0.35) !important; color: #fff !important;
-      border: none !important; cursor: pointer !important; padding: 0 !important;
+      background: rgba(30, 30, 60, 0.3) !important; color: rgba(255, 255, 255, 0.92) !important;
+      border: 1px solid rgba(255, 255, 255, 0.18) !important; cursor: pointer !important; padding: 0 !important;
       display: flex !important; align-items: center !important; justify-content: center !important;
-      font-size: 17px !important; line-height: 1 !important; opacity: 0.55 !important;
-      backdrop-filter: blur(6px) !important; -webkit-backdrop-filter: blur(6px) !important;
-      transition: opacity 0.2s ease !important; }
-    #mdt-gear:hover { opacity: 1 !important; }
+      opacity: 0.6 !important; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15) !important;
+      backdrop-filter: blur(8px) !important; -webkit-backdrop-filter: blur(8px) !important;
+      transition: opacity 0.2s ease, transform 0.3s ease !important; }
+    #mdt-gear:hover { opacity: 1 !important; transform: rotate(45deg) !important; }
+    /* Panel corner buttons share the gear's footprint: the ✕ sits on the
+       gear's exact spot (right: 12px), the view toggle just left of it. */
+    .mdt-corner-btn { position: fixed !important; top: calc(10px + env(safe-area-inset-top, 0px)) !important;
+      z-index: 2147483647 !important; width: 34px !important; height: 34px !important;
+      border-radius: 50% !important; background: rgba(28, 28, 50, 0.07) !important;
+      color: #1c1c28 !important; border: none !important; cursor: pointer !important;
+      padding: 0 !important; display: flex !important; align-items: center !important;
+      justify-content: center !important; opacity: 0.7 !important;
+      transition: opacity 0.2s ease, background 0.2s ease !important; }
+    .mdt-corner-btn:hover { opacity: 1 !important; background: rgba(28, 28, 50, 0.13) !important; }
+    #mdt-p-close { right: 12px !important; }
+    #mdt-p-view { right: 54px !important; }
     #mdt-panel { position: fixed !important; inset: 0 !important; z-index: 2147483647 !important;
       background: #f3f3f8 !important; color: #1c1c28 !important; overflow-y: auto !important;
       font-family: -apple-system, BlinkMacSystemFont, sans-serif !important;
@@ -735,13 +813,6 @@
     .mdt-p-head { display: flex !important; align-items: center !important;
       justify-content: space-between !important; margin: 0 0 1rem !important; }
     .mdt-p-title { font-size: 1.5rem !important; font-weight: 800 !important; margin: 0 !important; }
-    .mdt-p-close { background: none !important; border: none !important; cursor: pointer !important;
-      font-size: 1.5rem !important; color: inherit !important; opacity: 0.5 !important; padding: 0.25rem !important; }
-    .mdt-p-head-actions { display: flex !important; align-items: center !important; gap: 0.35rem !important; }
-    .mdt-p-gear { background: none !important; border: none !important; cursor: pointer !important;
-      font-size: 1.3rem !important; line-height: 1 !important; color: inherit !important;
-      opacity: 0.5 !important; padding: 0.25rem !important; font-family: inherit !important; }
-    .mdt-p-gear:hover { opacity: 1 !important; }
     .mdt-tabs { display: flex !important; gap: 4px !important; background: #e6e6ee !important;
       border-radius: 12px !important; padding: 4px !important; margin: 0 0 1rem !important; }
     .mdt-tab { flex: 1 !important; padding: 0.5rem 0 !important; text-align: center !important;
@@ -784,31 +855,23 @@
       font-weight: 700 !important; font-size: 0.85rem !important; font-family: inherit !important; }
     .mdt-p-signout:hover { background: #dcdce6 !important; }
 
-    /* ── Tracked-sites editor (modal reached from the panel gear) ──────── */
-    #mdt-modal-backdrop { position: fixed !important; inset: 0 !important;
-      z-index: 2147483647 !important; background: rgba(18, 18, 38, 0.55) !important;
-      -webkit-backdrop-filter: blur(3px) !important; backdrop-filter: blur(3px) !important;
-      display: flex !important; align-items: center !important; justify-content: center !important;
-      padding: calc(1rem + env(safe-area-inset-top, 0px)) 1rem
-               calc(1rem + env(safe-area-inset-bottom, 0px)) !important;
-      font-family: -apple-system, BlinkMacSystemFont, sans-serif !important; }
-    .mdt-modal { background: #f3f3f8 !important; color: #1c1c28 !important;
-      width: 100% !important; max-width: 440px !important; max-height: 85vh !important;
-      overflow-y: auto !important; border-radius: 20px !important;
-      padding: 1.25rem 1.25rem 1.5rem !important; text-align: left !important;
-      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35) !important; }
-    .mdt-modal-head { display: flex !important; align-items: center !important;
-      justify-content: space-between !important; margin: 0 0 1rem !important; }
-    .mdt-modal-title { font-size: 1.25rem !important; font-weight: 800 !important; margin: 0 !important; }
+    /* ── Blocked-sites editor (view inside the stats panel) ────────────── */
+    .mdt-set-title { font-size: 1.05rem !important; font-weight: 800 !important;
+      margin: 1.5rem 0 0.75rem !important; }
     .mdt-set-row { background: #fff !important; border-radius: 14px !important;
       padding: 0.7rem 1rem !important; margin: 0 0 0.5rem !important;
       display: flex !important; align-items: center !important;
       justify-content: space-between !important; gap: 0.75rem !important; }
-    .mdt-set-del { background: none !important; border: none !important; color: inherit !important;
-      opacity: 0.4 !important; font-size: 1rem !important; cursor: pointer !important;
-      padding: 0.35rem !important; font-family: inherit !important; }
-    .mdt-set-del:hover { opacity: 1 !important; }
-    .mdt-set-add { display: flex !important; gap: 0.6rem !important; margin: 0.75rem 0 0 !important; }
+    .mdt-set-actions { display: flex !important; align-items: center !important; gap: 0.2rem !important; }
+    .mdt-set-icon-btn { background: none !important; border: none !important; color: inherit !important;
+      opacity: 0.4 !important; cursor: pointer !important; padding: 0.45rem !important;
+      border-radius: 8px !important; font-family: inherit !important;
+      display: flex !important; align-items: center !important; justify-content: center !important; }
+    .mdt-set-icon-btn:hover { opacity: 1 !important; background: rgba(28, 28, 50, 0.06) !important; }
+    .mdt-set-form { display: flex !important; flex-direction: column !important;
+      gap: 0.6rem !important; flex: 1 !important; margin: 0 !important; }
+    .mdt-set-formrow { display: flex !important; gap: 0.6rem !important; }
+    .mdt-set-btn.mdt-set-btn-quiet { background: #e6e6ee !important; color: #1c1c28 !important; }
     .mdt-set-input { flex: 1 !important; min-width: 0 !important; padding: 0.7rem 1rem !important;
       border: 1px solid #d5d5e0 !important; border-radius: 12px !important;
       background: #fff !important; color: inherit !important;
@@ -838,6 +901,41 @@
   function setImportant(node, styles) {
     for (const [prop, val] of Object.entries(styles)) node.style.setProperty(prop, val, 'important');
   }
+
+  // Inline SVG icons (Lucide outlines) — replaces the ⚙ emoji, which rendered
+  // platform-dependently and broke the visual language. Built via
+  // createElementNS (CSP-safe) and pinned with important inline styles so
+  // page CSS targeting bare `svg` can't distort them.
+  function iconEl(size, parts) {
+    const svg = svgEl('svg', {
+      viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2',
+      'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+    });
+    setImportant(svg, { width: `${size}px`, height: `${size}px`, display: 'block', 'pointer-events': 'none' });
+    for (const [tag, attrs] of parts) svg.appendChild(svgEl(tag, attrs));
+    return svg;
+  }
+  const icons = {
+    cog: (size = 18) => iconEl(size, [
+      ['path', { d: 'M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z' }],
+      ['circle', { cx: '12', cy: '12', r: '3' }],
+    ]),
+    x: (size = 18) => iconEl(size, [
+      ['path', { d: 'M18 6 6 18' }],
+      ['path', { d: 'm6 6 12 12' }],
+    ]),
+    list: (size = 18) => iconEl(size, [
+      ['path', { d: 'M8 6h13' }], ['path', { d: 'M8 12h13' }], ['path', { d: 'M8 18h13' }],
+      ['path', { d: 'M3 6h.01' }], ['path', { d: 'M3 12h.01' }], ['path', { d: 'M3 18h.01' }],
+    ]),
+    chart: (size = 18) => iconEl(size, [
+      ['path', { d: 'M3 3v16a2 2 0 0 0 2 2h16' }],
+      ['path', { d: 'M18 17V9' }], ['path', { d: 'M13 17V5' }], ['path', { d: 'M8 17v-3' }],
+    ]),
+    pencil: (size = 15) => iconEl(size, [
+      ['path', { d: 'M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z' }],
+    ]),
+  };
 
   // ── In-page stats panel (opened via the gear icon) ───────────────────────
   const PERIODS = [
@@ -1026,19 +1124,33 @@
     const wrap = el('div', 'mdt-p-wrap');
     panel.appendChild(wrap);
 
-    const head = el('div', 'mdt-p-head');
-    const closeBtn = el('button', 'mdt-p-close', '✕');
+    // Corner controls, pinned to the screen's top-right: the ✕ lands on the
+    // exact spot the page gear occupied, so opening the panel reads as the
+    // gear morphing into a close button. The list/chart toggle beside it
+    // flips between the stats and blocked-sites views.
+    const closeBtn = el('button', 'mdt-corner-btn');
+    closeBtn.id = 'mdt-p-close';
+    closeBtn.title = 'Close';
+    closeBtn.appendChild(icons.x());
     closeBtn.onclick = () => panel.remove();
-    const sitesBtn = el('button', 'mdt-p-gear', '⚙');
-    sitesBtn.title = 'Manage tracked sites';
-    sitesBtn.onclick = openSitesModal;
-    const headActions = el('div', 'mdt-p-head-actions');
-    headActions.append(sitesBtn, closeBtn);
-    head.append(el('h2', 'mdt-p-title', 'Distractions'), headActions);
+    const viewBtn = el('button', 'mdt-corner-btn');
+    viewBtn.id = 'mdt-p-view';
+    panel.append(viewBtn, closeBtn);
+
+    const head = el('div', 'mdt-p-head');
+    const title = el('h2', 'mdt-p-title', 'Distractions');
+    head.appendChild(title);
     wrap.appendChild(head);
 
+    // Two views — stats (period tabs + numbers) and the blocked-sites
+    // editor — with the account footer below whichever one is active.
+    const statsView = el('div');
+    const sitesView = el('div');
+    const footer = el('div');
+    wrap.append(statsView, sitesView, footer);
+
     const tabs = el('div', 'mdt-tabs');
-    wrap.appendChild(tabs);
+    statsView.appendChild(tabs);
 
     // ‹ period › navigation — step backward/forward through calendar periods
     const nav = el('div', 'mdt-p-nav');
@@ -1046,14 +1158,10 @@
     const navLabel = el('div', 'mdt-p-navlabel');
     const nextBtn = el('button', 'mdt-p-arrow', '›');
     nav.append(prevBtn, navLabel, nextBtn);
-    wrap.appendChild(nav);
+    statsView.appendChild(nav);
 
-    // Stats and the account footer live in separate containers so period
-    // changes rebuild only the stats. The tracked-sites editor is a modal
-    // reached from the gear in the header (openSitesModal).
     const body = el('div');
-    const footer = el('div');
-    wrap.append(body, footer);
+    statsView.appendChild(body);
 
     let periodType = 'week';
     let offset = 0; // 0 = current period, -1 = previous…
@@ -1086,6 +1194,132 @@
     prevBtn.onclick = () => { offset--; render(); };
     nextBtn.onclick = () => { if (offset < 0) { offset++; render(); } };
 
+    // ── Blocked-sites view: list with inline editing + add form ─────────
+    let editingHost = null; // host currently open in the inline editor
+    const buildSiteForm = ({ name, url, submitLabel, onSubmit, onCancel }) => {
+      const form = el('form', 'mdt-set-form');
+      const nameInput = el('input', 'mdt-set-input');
+      nameInput.placeholder = 'Display name (optional)';
+      nameInput.value = name || '';
+      const row = el('div', 'mdt-set-formrow');
+      const urlInput = el('input', 'mdt-set-input');
+      urlInput.placeholder = 'example.com or full URL';
+      urlInput.value = url || '';
+      urlInput.autocapitalize = 'off';
+      urlInput.spellcheck = false;
+      const submit = el('button', 'mdt-set-btn', submitLabel);
+      submit.type = 'submit';
+      row.append(urlInput, submit);
+      if (onCancel) {
+        const cancel = el('button', 'mdt-set-btn mdt-set-btn-quiet', 'Cancel');
+        cancel.type = 'button';
+        cancel.onclick = onCancel;
+        row.appendChild(cancel);
+      }
+      form.append(nameInput, row);
+      form.onsubmit = async e => {
+        e.preventDefault();
+        const h = normalizeHost(urlInput.value);
+        if (!h) { alert('Enter a site like example.com'); return; }
+        await onSubmit(h, nameInput.value.trim());
+      };
+      return form;
+    };
+
+    const renderSites = async () => {
+      while (sitesView.firstChild) sitesView.removeChild(sitesView.firstChild);
+      const signedIn = !!(await store.get('auth-session', null));
+      const list = await getTrackedSites();
+      for (const s of [...list].sort((a, b) => a.host.localeCompare(b.host))) {
+        const row = el('div', 'mdt-set-row');
+        if (s.host === editingHost) {
+          row.appendChild(buildSiteForm({
+            // A name equal to the host is the auto-filled default, not a
+            // deliberate label — present it as blank.
+            name: s.display_name === s.host ? '' : s.display_name,
+            url: s.host,
+            submitLabel: 'Save',
+            onSubmit: async (h, name) => {
+              const ok = await updateTrackedSite(s.host, h, name || h);
+              if (!ok) alert("Saved on this device, but the change didn't reach the server — it won't sync to other devices yet.");
+              editingHost = null;
+              renderSites();
+            },
+            onCancel: () => { editingHost = null; renderSites(); },
+          }));
+          sitesView.appendChild(row);
+          continue;
+        }
+        const left = el('div');
+        left.append(
+          el('div', 'mdt-p-site-name', s.display_name || s.host),
+          el('div', 'mdt-p-site-sub', s.host),
+        );
+        row.appendChild(left);
+        if (signedIn) {
+          const actions = el('div', 'mdt-set-actions');
+          const edit = el('button', 'mdt-set-icon-btn');
+          edit.title = `Edit ${s.host}`;
+          edit.appendChild(icons.pencil());
+          edit.onclick = () => { editingHost = s.host; renderSites(); };
+          const del = el('button', 'mdt-set-icon-btn');
+          del.title = `Stop blocking ${s.host}`;
+          del.appendChild(icons.x(15));
+          del.onclick = async () => {
+            if (list.length <= 1) {
+              alert('Keep at least one blocked site — this panel only exists on blocked pages.');
+              return;
+            }
+            if (!confirm(`Stop blocking ${s.host}?`)) return;
+            const ok = await removeTrackedSite(s.host);
+            if (!ok) alert(`${s.host} is unblocked on this device, but the change didn't reach the server — a later sync may bring it back.`);
+            renderSites();
+          };
+          actions.append(edit, del);
+          row.appendChild(actions);
+        }
+        sitesView.appendChild(row);
+      }
+      if (signedIn) {
+        sitesView.appendChild(el('div', 'mdt-set-title', 'Add a site'));
+        sitesView.appendChild(buildSiteForm({
+          submitLabel: 'Add',
+          onSubmit: async (h, name) => {
+            const ok = await addTrackedSite(h, name);
+            if (!ok) alert(`${h} is blocked on this device, but the change didn't reach the server — it won't sync to other devices yet.`);
+            renderSites();
+          },
+        }));
+        sitesView.appendChild(el('div', 'mdt-set-note',
+          'Changes apply on the next page load and sync to your other devices.'));
+      } else {
+        sitesView.appendChild(el('div', 'mdt-set-note', 'Sign in to add or remove blocked sites.'));
+      }
+    };
+
+    // ── View toggle: list icon shows the sites editor, chart flips back ──
+    let view = 'stats';
+    const applyView = () => {
+      title.textContent = view === 'stats' ? 'Distractions' : 'Blocked sites';
+      setImportant(statsView, { display: view === 'stats' ? 'block' : 'none' });
+      setImportant(sitesView, { display: view === 'sites' ? 'block' : 'none' });
+      while (viewBtn.firstChild) viewBtn.removeChild(viewBtn.firstChild);
+      viewBtn.appendChild(view === 'stats' ? icons.list() : icons.chart());
+      viewBtn.title = view === 'stats' ? 'Blocked sites' : 'Stats';
+      if (view === 'sites') {
+        editingHost = null;
+        renderSites();
+        // Then pull the server list so edits from other devices show up —
+        // but never clobber a form the user has already started typing in.
+        refreshTrackedSites(0).then(() => {
+          const dirty = editingHost
+            || [...sitesView.querySelectorAll('.mdt-set-input')].some(i => i.value);
+          if (view === 'sites' && !dirty && document.getElementById('mdt-panel')) renderSites();
+        }, () => {});
+      }
+    };
+    viewBtn.onclick = () => { view = view === 'stats' ? 'sites' : 'stats'; applyView(); };
+
     // ── Account footer (which account this device syncs as + sign-out) ──
     const renderFooter = async () => {
       while (footer.firstChild) footer.removeChild(footer.firstChild);
@@ -1114,89 +1348,11 @@
     };
 
     document.documentElement.appendChild(panel);
+    applyView();
     // Drain any locally queued events first so the numbers include this
     // device's latest activity; render regardless of how the flush went.
     flushQueue().then(render, render);
     renderFooter();
-  }
-
-  // ── Tracked-sites editor — modal reached from the stats panel gear ───────
-  function openSitesModal() {
-    if (document.getElementById('mdt-modal-backdrop')) return;
-    const backdrop = el('div');
-    backdrop.id = 'mdt-modal-backdrop';
-    const modal = el('div', 'mdt-modal');
-    backdrop.appendChild(modal);
-    // Click the dimmed area outside the card to dismiss.
-    backdrop.onclick = e => { if (e.target === backdrop) backdrop.remove(); };
-
-    const head = el('div', 'mdt-modal-head');
-    const closeBtn = el('button', 'mdt-p-close', '✕');
-    closeBtn.onclick = () => backdrop.remove();
-    head.append(el('h2', 'mdt-modal-title', 'Tracked sites'), closeBtn);
-    modal.appendChild(head);
-
-    const listBox = el('div');
-    modal.appendChild(listBox);
-
-    const render = async () => {
-      while (listBox.firstChild) listBox.removeChild(listBox.firstChild);
-      const signedIn = !!(await store.get('auth-session', null));
-      const list = await getTrackedSites();
-      for (const s of [...list].sort((a, b) => a.host.localeCompare(b.host))) {
-        const row = el('div', 'mdt-set-row');
-        const left = el('div');
-        left.append(
-          el('div', 'mdt-p-site-name', s.display_name || s.host),
-          el('div', 'mdt-p-site-sub', s.host),
-        );
-        row.appendChild(left);
-        if (signedIn) {
-          const del = el('button', 'mdt-set-del', '✕');
-          del.title = `Stop tracking ${s.host}`;
-          del.onclick = async () => {
-            if (list.length <= 1) {
-              alert('Keep at least one tracked site — this panel only exists on tracked pages.');
-              return;
-            }
-            if (!confirm(`Stop tracking ${s.host}?`)) return;
-            const ok = await removeTrackedSite(s.host);
-            if (!ok) alert(`${s.host} is untracked on this device, but the change didn't reach the server — a later sync may bring it back.`);
-            render();
-          };
-          row.appendChild(del);
-        }
-        listBox.appendChild(row);
-      }
-      if (signedIn) {
-        const form = el('form', 'mdt-set-add');
-        const input = el('input', 'mdt-set-input');
-        input.placeholder = 'example.com';
-        input.autocapitalize = 'off';
-        input.spellcheck = false;
-        const addBtn = el('button', 'mdt-set-btn', 'Add');
-        addBtn.type = 'submit';
-        form.onsubmit = async e => {
-          e.preventDefault();
-          const h = normalizeHost(input.value);
-          if (!h) { alert('Enter a site like example.com'); return; }
-          const ok = await addTrackedSite(h);
-          if (!ok) alert(`${h} is tracked on this device, but the change didn't reach the server — it won't sync to other devices yet.`);
-          input.value = '';
-          render();
-        };
-        form.append(input, addBtn);
-        listBox.appendChild(form);
-        listBox.appendChild(el('div', 'mdt-set-note',
-          'Changes apply on the next page load and sync to your other devices.'));
-      } else {
-        listBox.appendChild(el('div', 'mdt-set-note', 'Sign in to add or remove tracked sites.'));
-      }
-    };
-
-    document.documentElement.appendChild(backdrop);
-    // Force a list sync so edits made on other devices show immediately.
-    refreshTrackedSites(0).then(render, render);
   }
 
   // ── Re-lock bar — countdown + tap to re-lock; auto re-locks at expiry ────
@@ -1222,6 +1378,10 @@
       bar.textContent = `🔓 ${siteName} unlocked · ${m}:${s} left · ${remainingToday} min left today · tap to re-lock`;
     };
     bar.onclick = async () => {
+      // Double-tap guard: the async work below spans several awaits, so a
+      // second tap before the reload would refund (and log) twice.
+      if (bar.dataset.relocking) return;
+      bar.dataset.relocking = '1';
       clearInterval(relockInterval);
       // Refund the unused whole minutes — re-locking early shouldn't cost
       // budget the session never consumed. The 'relocked' event carries the
@@ -1244,9 +1404,10 @@
 
   function addGear() {
     if (document.getElementById('mdt-gear')) return;
-    const gear = el('button', null, '⚙');
+    const gear = el('button');
     gear.id = 'mdt-gear';
     gear.title = 'Distraction stats';
+    gear.appendChild(icons.cog());
     gear.onclick = openStatsPanel;
     document.documentElement.appendChild(gear);
   }
@@ -1309,7 +1470,18 @@
     const setScale = s =>
       circle.style.setProperty('transform', `translate(-50%, -50%) scale(${s})`, 'important');
     const phase = el('div', 'mdt-phase', 'Breathe in');
-    card.append(...buildStatHeader(stats), stage, phase);
+    // Budget notice lives on the breathing screen itself: when the daily
+    // unlock time is spent, say so here — the user learns the outcome up
+    // front instead of after breathing through to the choice screen. The
+    // breathing itself always runs.
+    const budgetNote = el('div', 'mdt-budget', '');
+    card.append(...buildStatHeader(stats), stage, phase, budgetNote);
+    unlockRemainingToday().then(rem => {
+      if (rem < 1) {
+        budgetNote.textContent =
+          `Daily unlock limit reached (${CONFIG.DAILY_UNLOCK_MAX_MINS} min) — back tomorrow.`;
+      }
+    });
     // Force a style flush before the first scale-up: without it the new
     // transform lands in the same frame the circle is inserted, so the 5s
     // transition never runs and the circle pops in already fully grown.
