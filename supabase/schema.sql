@@ -11,10 +11,10 @@ create table events (
   user_id uuid not null default auth.uid() references auth.users(id),
   host text not null,
   url text,
-  event_type text not null check (event_type in ('attempt', 'proceeded', 'abandoned', 'breathing')),
+  event_type text not null check (event_type in ('attempt', 'proceeded', 'abandoned', 'breathing', 'relocked')),
   device text,
   cycles int,        -- 'breathing' events: number of box-breathing cycles completed
-  session_mins int,  -- 'proceeded' events: unlock duration the user picked
+  session_mins int,  -- 'proceeded': unlock duration picked; 'relocked': unused minutes refunded by an early re-lock
   client_created_at timestamptz not null,
   created_at timestamptz not null default now()
 );
@@ -41,6 +41,11 @@ create table sites (
 
 alter table sites enable row level security;
 create policy "read sites" on sites for select using (true);
+-- The tracked-site list is edited from the userscript's stats panel
+-- (single-tenant: any signed-in user is the owner).
+create policy "insert sites" on sites for insert to authenticated with check (true);
+create policy "delete sites" on sites for delete to authenticated using (true);
+create policy "update sites" on sites for update to authenticated using (true) with check (true);
 
 insert into sites (host, display_name, avg_minutes_saved) values
   ('youtube.com', 'YouTube', 15),
