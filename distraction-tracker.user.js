@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      2.10.0
+// @version      2.10.1
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
 // @author       Simon Roux
 // @homepageURL  https://github.com/simoneroux/breathing
@@ -392,21 +392,18 @@
   }
 
   // Merged view of every device's event file, memoized briefly — remote data
-  // only changes when another device writes. Rows carry _own so the budget
-  // split doesn't depend on device labels (twin "Mac Chrome" installs stay
-  // distinct). Returns null if ANY file fails to read: a partial merge would
-  // silently understate the daily budget.
+  // only changes when another device writes. Returns null if ANY file fails
+  // to read: a partial merge would silently understate the daily budget.
   let driveEventsMemo = null;
   async function driveAllEvents() {
     if (driveEventsMemo && Date.now() - driveEventsMemo.at < 60000) return driveEventsMemo.rows;
     const index = await driveFileIndex();
     if (!index) return null;
-    const ownName = `events-${await driveInstallId()}.json`;
     const rows = [];
     for (const name of Object.keys(index).filter(n => n.startsWith('events-'))) {
       const data = await driveReadJson(name);
       if (data === undefined) return null;
-      for (const e of data?.events || []) rows.push({ ...e, _own: name === ownName });
+      for (const e of data?.events || []) rows.push(e);
     }
     driveEventsMemo = { at: Date.now(), rows };
     return rows;
@@ -933,15 +930,18 @@
     return 0;
   }
 
-  // One remote fetch per page load (re-keyed at midnight), split into this
-  // device's rows vs every other device's. Drive rows carry an exact _own
-  // flag (per-install files); Supabase rows fall back to the device label,
-  // so twin setups there (two "Mac Chrome"s) should pin distinct
-  // CONFIG.DEVICE_NAMEs. A failed fetch is NOT memoized: the next budget
-  // check retries instead of running ledger-only until midnight.
-  // Resolves null when not connected or the request fails.
+  // One remote fetch per page load (re-keyed at midnight): today's budget
+  // events (proceeded +mins, relocked −mins) across ALL devices, each with
+  // its id so the offline queue can be merged without double-counting an
+  // event that briefly lives in both. Deliberately NOT split by device —
+  // attribution by device label was fragile: if a label drifts (browser
+  // update, config change) this device's own events leak into an "others"
+  // bucket and get counted twice, pinning the budget near the cap. Union by
+  // id counts each event exactly once no matter which device it came from.
+  // A failed fetch is NOT memoized: the next check retries. Resolves null
+  // when not connected or the request fails.
   let remoteUsedMemo = null;
-  function remoteUnlockUsedToday() {
+  function remoteBudgetToday() {
     if (remoteUsedMemo?.day !== todayKey()) {
       const day = todayKey();
       remoteUsedMemo = {
@@ -951,10 +951,7 @@
             const all = await sync.fetchEvents(startOfToday().toISOString());
             if (!all) return null;
             const rows = all.filter(r => r.event_type === 'proceeded' || r.event_type === 'relocked');
-            const mine = deviceLabel();
-            const isOwn = r => (r._own !== undefined ? r._own : r.device === mine);
-            const sum = which => Math.max(0, rows.filter(which).reduce((t, r) => t + budgetDelta(r), 0));
-            return { own: sum(isOwn), others: sum(r => !isOwn(r)) };
+            return { total: rows.reduce((t, r) => t + budgetDelta(r), 0), ids: new Set(rows.map(r => r.id)) };
           } catch {
             return null;
           }
@@ -967,35 +964,29 @@
     return remoteUsedMemo.promise;
   }
 
-  // Today's budget movement still waiting in the offline queue — by
-  // definition not yet reflected in the remote sum.
-  async function pendingUnlockUsedToday() {
+  // Today's queued budget events not yet in the remote sum — deduped by id
+  // so an event caught mid-flush (briefly in both queue and server) counts
+  // once.
+  async function pendingBudgetToday(remoteIds) {
     const queue = await store.get('pending-events', []);
     const start = startOfToday();
-    return queue.reduce(
-      (sum, e) => new Date(e.client_created_at) >= start ? sum + budgetDelta(e) : sum,
-      0,
-    );
+    return queue.reduce((sum, e) =>
+      (!remoteIds?.has(e.id) && new Date(e.client_created_at) >= start)
+        ? sum + budgetDelta(e) : sum, 0);
   }
 
   async function unlockUsedToday() {
-    const local = await localUnlockUsedToday();
     // Cap the wait: budget checks gate UI renders, and the remote fetch is
     // prefetched in main() so this normally resolves instantly.
     const remote = await Promise.race([
-      remoteUnlockUsedToday(),
+      remoteBudgetToday(),
       new Promise(resolve => setTimeout(() => resolve(null), 2500)),
     ]);
-    if (remote == null) return local;
-    // The ledger is authoritative for this device's own usage: it's charged
-    // up front and refunded the instant a session is re-locked, whereas the
-    // server's copy of our own events can race the queue flush — a remote
-    // snapshot taken mid-flush misses a just-synced refund that the queue
-    // no longer holds, which used to swallow refunds until the next reload.
-    // The server's own-device rows only fill in when the ledger is empty
-    // (fresh GM storage mid-day).
-    const own = local > 0 ? local : remote.own + await pendingUnlockUsedToday();
-    return remote.others + own;
+    // Offline / not connected: the device-local ledger is the only source.
+    if (remote == null) return localUnlockUsedToday();
+    // Online: server sum (all devices) plus this device's not-yet-synced
+    // queue, each event counted once. No device labels involved.
+    return Math.max(0, remote.total + await pendingBudgetToday(remote.ids));
   }
 
   async function unlockRemainingToday() {
@@ -2176,8 +2167,8 @@
 
   async function main() {
     flushQueue(); // opportunistic background sync, never blocks rendering
-    remoteUnlockUsedToday(); // prefetch the cross-device budget — resolved by
-                             // the time any budget-gated screen needs it
+    remoteBudgetToday(); // prefetch the cross-device budget — resolved by
+                         // the time any budget-gated screen needs it
     addGear();    // stats entry point, present locked or unlocked
 
     if (await isUnlocked()) { showRelockBar(); return; } // site loads normally
