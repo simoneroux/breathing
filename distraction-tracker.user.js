@@ -1249,6 +1249,40 @@
       font-size: 0.75rem !important; cursor: pointer !important; font-family: inherit !important;
       text-decoration: underline !important; }
     .mdt-p-switch:hover { opacity: 0.8 !important; }
+
+    /* ── Google Drive setup popup ──────────────────────────────────────── */
+    #mdt-modal-backdrop { position: fixed !important; inset: 0 !important;
+      z-index: 2147483647 !important; background: rgba(18, 18, 38, 0.55) !important;
+      -webkit-backdrop-filter: blur(3px) !important; backdrop-filter: blur(3px) !important;
+      display: flex !important; align-items: center !important; justify-content: center !important;
+      padding: calc(1rem + env(safe-area-inset-top, 0px)) 1rem
+               calc(1rem + env(safe-area-inset-bottom, 0px)) !important;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif !important; }
+    .mdt-modal { background: #f3f3f8 !important; color: #1c1c28 !important;
+      width: 100% !important; max-width: 460px !important; max-height: 85vh !important;
+      overflow-y: auto !important; border-radius: 20px !important;
+      padding: 1.25rem !important; text-align: left !important;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35) !important; }
+    .mdt-modal-head { display: flex !important; align-items: center !important;
+      justify-content: space-between !important; gap: 0.75rem !important; margin: 0 0 0.5rem !important; }
+    .mdt-modal-title { font-size: 1.2rem !important; font-weight: 800 !important; margin: 0 !important; }
+    .mdt-modal-close { width: 32px !important; height: 32px !important; flex: none !important;
+      border-radius: 50% !important; background: rgba(28, 28, 50, 0.07) !important;
+      border: none !important; cursor: pointer !important; padding: 0 !important; color: inherit !important;
+      display: flex !important; align-items: center !important; justify-content: center !important;
+      opacity: 0.7 !important; }
+    .mdt-modal-close:hover { opacity: 1 !important; background: rgba(28, 28, 50, 0.13) !important; }
+    .mdt-modal-intro { font-size: 0.85rem !important; line-height: 1.5 !important;
+      opacity: 0.7 !important; margin: 0 0 0.9rem !important; }
+    .mdt-steps { margin: 0 0 1rem !important; padding: 0 0 0 1.2rem !important;
+      font-size: 0.85rem !important; line-height: 1.55 !important; }
+    .mdt-steps li { margin: 0 0 0.4rem !important; }
+    .mdt-code { background: rgba(28, 28, 50, 0.08) !important; border-radius: 5px !important;
+      padding: 0.05rem 0.3rem !important; font-family: ui-monospace, Menlo, monospace !important;
+      font-size: 0.78rem !important; }
+    .mdt-link { color: #3f4877 !important; font-weight: 700 !important;
+      text-decoration: underline !important; }
+    .mdt-modal .mdt-set-form { margin-top: 0.25rem !important; }
   `);
 
   function el(tag, className, text) {
@@ -1414,66 +1448,108 @@
     return { rows, totals, annual };
   }
 
-  // Disconnected-state CTA. Google Drive needs a one-time OAuth client
-  // (id + secret) before pairing can start — entered here rather than by
-  // editing the script, and kept in GM storage so script auto-updates never
-  // wipe it. GM storage is per-script and shared across every matched
-  // origin, so this is once per device, not once per site.
+  // One-time Google Drive setup popup: the OAuth client (id + secret) is
+  // entered here rather than by editing the script, and kept in GM storage
+  // so script auto-updates never wipe it. GM storage is per-script and
+  // shared across every matched origin, so this is once per device, not
+  // once per site. `onSaved` runs after a successful save.
+  function openDriveSetupModal(onSaved) {
+    if (document.getElementById('mdt-modal-backdrop')) return;
+    const backdrop = el('div');
+    backdrop.id = 'mdt-modal-backdrop';
+    const modal = el('div', 'mdt-modal');
+    backdrop.appendChild(modal);
+    backdrop.onclick = e => { if (e.target === backdrop) backdrop.remove(); };
+
+    const head = el('div', 'mdt-modal-head');
+    const closeBtn = el('button', 'mdt-modal-close');
+    closeBtn.title = 'Close';
+    closeBtn.appendChild(icons.x(16));
+    closeBtn.onclick = () => backdrop.remove();
+    head.append(el('h2', 'mdt-modal-title', 'Set up Google Drive sync'), closeBtn);
+
+    const intro = el('div', 'mdt-modal-intro',
+      'Your stats stay in your own Google Drive — nothing is stored on anyone '
+      + "else's server. Google needs a one-time \"app\" to grant access to; you "
+      + 'create it once, free, then paste its two values below.');
+
+    const steps = el('ol', 'mdt-steps');
+    const step = (...nodes) => {
+      const li = document.createElement('li');
+      li.append(...nodes);
+      steps.appendChild(li);
+    };
+    const link = el('a', 'mdt-link', 'Google Cloud Console');
+    link.href = 'https://console.cloud.google.com/projectcreate';
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    step('Open the ', link, ' and create a project (any name).');
+    step('APIs & Services → Library → enable ', el('span', 'mdt-code', 'Google Drive API'), '.');
+    step('APIs & Services → OAuth consent screen → External, fill in the app name and your email, and add the scope ',
+      el('span', 'mdt-code', '.../auth/drive.appdata'), '.');
+    step('On that same screen, press Publish app. (Left in "Testing", Google expires the connection every 7 days.)');
+    step('Credentials → Create credentials → OAuth client ID → application type ',
+      el('span', 'mdt-code', 'TVs and Limited Input devices'), '.');
+    step('Copy the client ID and client secret it shows, and paste them here.');
+
+    const form = el('form', 'mdt-set-form');
+    const id = el('input', 'mdt-set-input');
+    id.placeholder = 'Client ID (ends in .apps.googleusercontent.com)';
+    const secret = el('input', 'mdt-set-input');
+    secret.placeholder = 'Client secret';
+    for (const i of [id, secret]) { i.autocapitalize = 'off'; i.spellcheck = false; }
+    const save = el('button', 'mdt-set-btn', 'Save');
+    save.type = 'submit';
+    const row = el('div', 'mdt-set-formrow');
+    row.append(secret, save);
+    form.append(id, row);
+    const status = el('div', 'mdt-set-note',
+      'Stored on this device only, and kept across script updates.');
+    form.onsubmit = async e => {
+      e.preventDefault();
+      if (!id.value.trim() || !secret.value.trim()) {
+        status.textContent = 'Both fields are required.';
+        return;
+      }
+      await store.set('gdrive-client', { id: id.value.trim(), secret: secret.value.trim() });
+      backdrop.remove();
+      onSaved?.();
+    };
+    // Prefill when re-opened to change an existing client.
+    driveClient().then(c => { id.value = c.id || ''; secret.value = c.secret || ''; });
+
+    modal.append(head, intro, steps, form, status);
+    document.documentElement.appendChild(backdrop);
+  }
+
+  // Disconnected-state CTA in the stats panel.
   function buildConnectBox(onDone) {
     const box = el('div', 'mdt-p-status', 'Not syncing — activity is only stored on this device.');
     const slot = el('div');
     const status = el('div', 'mdt-p-account', '');
     box.append(slot, status);
 
-    const showConnect = () => {
+    const render = (hasClient) => {
       while (slot.firstChild) slot.removeChild(slot.firstChild);
+      if (sync.name === 'gdrive' && !hasClient) {
+        const setup = el('button', 'mdt-p-signin', 'Set up Google Drive');
+        setup.onclick = () => openDriveSetupModal(() => render(true));
+        slot.appendChild(setup);
+        return;
+      }
       const btn = el('button', 'mdt-p-signin',
         sync.name === 'gdrive' ? 'Connect Google Drive' : 'Sign in to sync');
       btn.onclick = () => sync.connect(status, onDone);
       slot.appendChild(btn);
       if (sync.name === 'gdrive') {
         const edit = el('button', 'mdt-p-switch', 'Change Google OAuth client');
-        edit.onclick = showSetup;
+        edit.onclick = () => openDriveSetupModal(() => render(true));
         slot.appendChild(edit);
       }
     };
 
-    const showSetup = () => {
-      while (slot.firstChild) slot.removeChild(slot.firstChild);
-      status.textContent = '';
-      const form = el('form', 'mdt-set-form');
-      const id = el('input', 'mdt-set-input');
-      id.placeholder = 'Google OAuth client ID';
-      const secret = el('input', 'mdt-set-input');
-      secret.placeholder = 'Client secret';
-      for (const i of [id, secret]) { i.autocapitalize = 'off'; i.spellcheck = false; }
-      const save = el('button', 'mdt-set-btn', 'Save');
-      save.type = 'submit';
-      const row = el('div', 'mdt-set-formrow');
-      row.append(secret, save);
-      form.append(id, row);
-      form.onsubmit = async e => {
-        e.preventDefault();
-        if (!id.value.trim() || !secret.value.trim()) {
-          status.textContent = 'Both fields are required.';
-          return;
-        }
-        await store.set('gdrive-client', { id: id.value.trim(), secret: secret.value.trim() });
-        status.textContent = 'Saved on this device — you can connect now.';
-        showConnect();
-      };
-      slot.append(form, el('div', 'mdt-set-note',
-        'One-time setup: in Google Cloud Console enable the Drive API, add the '
-        + 'drive.appdata scope, publish the consent screen, then create an OAuth '
-        + 'client of type "TVs and Limited Input devices" and paste it here.'));
-      driveClient().then(c => { id.value = c.id || ''; secret.value = c.secret || ''; });
-    };
-
-    if (sync.name === 'gdrive') {
-      driveClient().then(c => (c.id && c.secret ? showConnect() : showSetup()));
-    } else {
-      showConnect();
-    }
+    if (sync.name === 'gdrive') driveClient().then(c => render(!!(c.id && c.secret)));
+    else render(true);
     return box;
   }
 
@@ -1757,12 +1833,21 @@
       // Not connected: no connect button here — the stats body already
       // shows the one canonical connect CTA (a second button reads as two
       // different actions). The footer keeps only the backend switch.
-      // Per-device backend switch — takes effect on reload.
+      // Per-device backend switch — takes effect on reload. Choosing Drive
+      // without an OAuth client yet opens the setup popup first, so the
+      // switch never lands the user on a dead "connect" button.
       const other = sync.name === 'gdrive' ? supabaseBackend : driveBackend;
       const sw = el('button', 'mdt-p-switch', `Use ${other.label} sync instead`);
-      sw.onclick = async () => {
+      const switchTo = async () => {
         await store.set('sync-backend', other.name);
         location.reload();
+      };
+      sw.onclick = async () => {
+        if (other.name === 'gdrive') {
+          const c = await driveClient();
+          if (!c.id || !c.secret) { openDriveSetupModal(switchTo); return; }
+        }
+        switchTo();
       };
       foot.appendChild(sw);
     };
