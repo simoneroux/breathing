@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      2.9.0
+// @version      2.10.0
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
 // @author       Simon Roux
 // @homepageURL  https://github.com/simoneroux/breathing
@@ -14,6 +14,8 @@
 // @grant        GM.xmlHttpRequest
 // @grant        GM.addStyle
 // @connect      wqdktvfwbjumkgvcijux.supabase.co
+// @connect      oauth2.googleapis.com
+// @connect      www.googleapis.com
 // @run-at       document-start
 // @noframes
 // ==/UserScript==
@@ -51,6 +53,17 @@
     SUPABASE_URL: 'https://wqdktvfwbjumkgvcijux.supabase.co',
     SUPABASE_ANON_KEY: 'sb_publishable_P9w1-Ounnn1UYy3KXe8udA_qJw3Ng6q',
     AUTH_PAGE: 'https://simoneroux.github.io/breathing/auth.html',
+    // ── Sync backend ────────────────────────────────────────────────────
+    // 'supabase' (default): the original hosted-Postgres backend above.
+    // 'gdrive': store the event log in the user's own Google Drive app-data
+    // folder — zero infrastructure, but needs a Google OAuth client of type
+    // "TV and Limited Input" (device flow). The installed-app secret is not
+    // confidential by Google's own definition, so shipping it here is fine.
+    // The active backend is a per-device setting ('sync-backend' in GM
+    // storage, switchable from the panel footer); this is just the default.
+    SYNC_BACKEND_DEFAULT: 'supabase',
+    GOOGLE_CLIENT_ID: '',
+    GOOGLE_CLIENT_SECRET: '',
     // Optional device label for debugging cross-device sync ('' = auto-detect
     // from the platform). Leave as '' — auto-updates from @updateURL overwrite
     // any manual edits to this file, so per-device edits don't survive.
@@ -111,21 +124,15 @@
     return seeded;
   }
 
-  // Pull the server list into the local cache. The `sites` SELECT policy is
-  // public, so this works signed out too. An empty server list is ignored —
-  // wiping the cache to nothing would un-track every site on a fetch glitch.
+  // Pull the backend's list into the local cache. An empty (or failed) fetch
+  // is ignored — wiping the cache to nothing would un-track every site on a
+  // glitch. avg_minutes_saved rides along so host edits and the time-saved
+  // math can use the tuned heuristic without extra fetches.
   async function refreshTrackedSites(throttleMins) {
     const last = await store.get('tracked-sites-synced-at', 0);
     if (throttleMins && Date.now() - last < throttleMins * 60000) return;
     try {
-      const res = await gmRequest({
-        method: 'GET',
-        // avg_minutes_saved rides along so a host edit (delete + reinsert of
-        // the primary key) can carry the tuned heuristic to the new row.
-        url: `${CONFIG.SUPABASE_URL}/rest/v1/sites?select=host,display_name,avg_minutes_saved`,
-        headers: { apikey: CONFIG.SUPABASE_ANON_KEY },
-      });
-      const rows = JSON.parse(res.responseText);
+      const rows = await sync.fetchSites();
       if (Array.isArray(rows) && rows.length) {
         await store.set('tracked-sites', rows.map(
           r => ({ host: r.host, display_name: r.display_name, avg_minutes_saved: r.avg_minutes_saved })));
@@ -154,37 +161,16 @@
     return /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/.test(v) ? v : null;
   }
 
-  // Add/remove/update push straight to Supabase (the panel gates all three
-  // behind sign-in) and update the local cache immediately so the change
-  // applies on this device's next page load without waiting for a sync.
-  async function siteHeaders(session, extra = {}) {
-    return {
-      apikey: CONFIG.SUPABASE_ANON_KEY,
-      Authorization: `Bearer ${session.access_token}`,
-      'Content-Type': 'application/json',
-      ...extra,
-    };
-  }
-
+  // Add/remove/update push straight to the active backend (the panel gates
+  // all three behind a connection) and update the local cache immediately so
+  // the change applies on this device's next page load without waiting.
   async function addTrackedSite(newHost, name) {
     const display = (name || '').trim() || newHost;
     const list = await getTrackedSites();
     if (!list.some(s => s.host === newHost)) {
       await store.set('tracked-sites', [...list, { host: newHost, display_name: display }]);
     }
-    const session = await getSession();
-    if (!session) return false;
-    try {
-      const res = await gmRequest({
-        method: 'POST',
-        url: `${CONFIG.SUPABASE_URL}/rest/v1/sites`,
-        headers: await siteHeaders(session, { Prefer: 'resolution=ignore-duplicates' }),
-        data: JSON.stringify([{ host: newHost, display_name: display }]),
-      });
-      return res.status >= 200 && res.status < 300;
-    } catch {
-      return false;
-    }
+    return sync.addSite(newHost, display);
   }
 
   async function updateTrackedSite(oldHost, newHost, newName) {
@@ -192,59 +178,13 @@
     const entry = list.find(s => s.host === oldHost) || {};
     const updated = { ...entry, host: newHost, display_name: newName };
     await store.set('tracked-sites', list.map(s => (s.host === oldHost ? updated : s)));
-    const session = await getSession();
-    if (!session) return false;
-    try {
-      if (newHost === oldHost) {
-        const res = await gmRequest({
-          method: 'PATCH',
-          url: `${CONFIG.SUPABASE_URL}/rest/v1/sites?host=eq.${encodeURIComponent(oldHost)}`,
-          headers: await siteHeaders(session),
-          data: JSON.stringify({ display_name: newName }),
-        });
-        return res.status >= 200 && res.status < 300;
-      }
-      // Host is the primary key: insert the new row first — carrying the old
-      // row's avg_minutes_saved so the tuned heuristic survives — and delete
-      // the old one only once the insert landed (no window with the site
-      // missing server-side).
-      const ins = await gmRequest({
-        method: 'POST',
-        url: `${CONFIG.SUPABASE_URL}/rest/v1/sites`,
-        headers: await siteHeaders(session, { Prefer: 'resolution=ignore-duplicates' }),
-        data: JSON.stringify([{
-          host: newHost,
-          display_name: newName,
-          ...(entry.avg_minutes_saved != null ? { avg_minutes_saved: entry.avg_minutes_saved } : {}),
-        }]),
-      });
-      if (!(ins.status >= 200 && ins.status < 300)) return false;
-      const del = await gmRequest({
-        method: 'DELETE',
-        url: `${CONFIG.SUPABASE_URL}/rest/v1/sites?host=eq.${encodeURIComponent(oldHost)}`,
-        headers: await siteHeaders(session),
-      });
-      return del.status >= 200 && del.status < 300;
-    } catch {
-      return false;
-    }
+    return sync.updateSite(oldHost, newHost, newName, entry);
   }
 
   async function removeTrackedSite(oldHost) {
     const list = await getTrackedSites();
     await store.set('tracked-sites', list.filter(s => s.host !== oldHost));
-    const session = await getSession();
-    if (!session) return false;
-    try {
-      const res = await gmRequest({
-        method: 'DELETE',
-        url: `${CONFIG.SUPABASE_URL}/rest/v1/sites?host=eq.${encodeURIComponent(oldHost)}`,
-        headers: { apikey: CONFIG.SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}` },
-      });
-      return res.status >= 200 && res.status < 300;
-    } catch {
-      return false;
-    }
+    return sync.removeSite(oldHost);
   }
 
   function deviceLabel() {
@@ -329,6 +269,450 @@
     return session;
   }
 
+  // ── Google Drive backend internals ──────────────────────────────────────
+  // Layout in the Drive app-data folder: one `events-<installId>.json` per
+  // device (each device writes ONLY its own file and reads the others, so
+  // there are no write races by construction) plus a shared `sites.json`.
+  async function driveInstallId() {
+    let id = await store.get('gdrive-install-id', null);
+    if (!id) {
+      id = crypto.randomUUID().slice(0, 8);
+      await store.set('gdrive-install-id', id);
+    }
+    return id;
+  }
+
+  // The OAuth client can also live in GM storage ('gdrive-client':
+  // {id, secret}) — auto-updates from @updateURL overwrite manual CONFIG
+  // edits, so a client pasted into the file would be lost on next release.
+  async function driveClient() {
+    const stored = await store.get('gdrive-client', null);
+    return {
+      id: stored?.id || CONFIG.GOOGLE_CLIENT_ID,
+      secret: stored?.secret || CONFIG.GOOGLE_CLIENT_SECRET,
+    };
+  }
+
+  async function driveToken() {
+    const auth = await store.get('gdrive-auth', null);
+    if (!auth?.refresh_token) return null;
+    if (auth.expires_at > Date.now() + 60000) return auth.access_token;
+    try {
+      const client = await driveClient();
+      const res = await gmRequest({
+        method: 'POST',
+        url: 'https://oauth2.googleapis.com/token',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        data: `client_id=${encodeURIComponent(client.id)}`
+          + `&client_secret=${encodeURIComponent(client.secret)}`
+          + `&refresh_token=${encodeURIComponent(auth.refresh_token)}`
+          + '&grant_type=refresh_token',
+      });
+      const t = JSON.parse(res.responseText);
+      if (!t.access_token) {
+        // invalid_grant = pairing revoked/expired: wipe the dead tokens so
+        // the UI offers a fresh pairing instead of failing silently forever.
+        if (t.error === 'invalid_grant') await GM.deleteValue('gdrive-auth');
+        return null;
+      }
+      await store.set('gdrive-auth', { ...auth, access_token: t.access_token, expires_at: Date.now() + t.expires_in * 1000 });
+      return t.access_token;
+    } catch {
+      return null;
+    }
+  }
+
+  async function driveRequest(opts) {
+    const token = await driveToken();
+    if (!token) return null;
+    try {
+      return await gmRequest({ ...opts, headers: { ...opts.headers, Authorization: `Bearer ${token}` } });
+    } catch {
+      return null;
+    }
+  }
+
+  // name → file id for the app-data folder, memoized per page load.
+  let driveIndexMemo = null;
+  async function driveFileIndex() {
+    if (driveIndexMemo) return driveIndexMemo;
+    const res = await driveRequest({
+      method: 'GET',
+      url: 'https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&pageSize=100&fields=files(id,name)',
+    });
+    if (!res || res.status !== 200) return null;
+    try {
+      driveIndexMemo = Object.fromEntries((JSON.parse(res.responseText).files || []).map(f => [f.name, f.id]));
+      return driveIndexMemo;
+    } catch {
+      return null;
+    }
+  }
+
+  // undefined = couldn't reach Drive (retry later); null = file doesn't exist.
+  async function driveReadJson(name) {
+    const index = await driveFileIndex();
+    if (!index) return undefined;
+    if (!index[name]) return null;
+    const res = await driveRequest({
+      method: 'GET',
+      url: `https://www.googleapis.com/drive/v3/files/${index[name]}?alt=media`,
+    });
+    if (!res || res.status !== 200) return undefined;
+    try { return JSON.parse(res.responseText); } catch { return undefined; }
+  }
+
+  async function driveWriteJson(name, value) {
+    const index = await driveFileIndex();
+    if (!index) return false;
+    const body = JSON.stringify(value);
+    let res;
+    if (index[name]) {
+      res = await driveRequest({
+        method: 'PATCH',
+        url: `https://www.googleapis.com/upload/drive/v3/files/${index[name]}?uploadType=media`,
+        headers: { 'Content-Type': 'application/json' },
+        data: body,
+      });
+    } else {
+      const B = 'mdt-multipart-boundary';
+      res = await driveRequest({
+        method: 'POST',
+        url: 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
+        headers: { 'Content-Type': `multipart/related; boundary=${B}` },
+        data: `--${B}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n`
+          + JSON.stringify({ name, parents: ['appDataFolder'] })
+          + `\r\n--${B}\r\nContent-Type: application/json\r\n\r\n${body}\r\n--${B}--`,
+      });
+      if (res && res.status >= 200 && res.status < 300) {
+        try { driveIndexMemo[name] = JSON.parse(res.responseText).id; } catch { driveIndexMemo = null; }
+      }
+    }
+    return !!res && res.status >= 200 && res.status < 300;
+  }
+
+  // Merged view of every device's event file, memoized briefly — remote data
+  // only changes when another device writes. Rows carry _own so the budget
+  // split doesn't depend on device labels (twin "Mac Chrome" installs stay
+  // distinct). Returns null if ANY file fails to read: a partial merge would
+  // silently understate the daily budget.
+  let driveEventsMemo = null;
+  async function driveAllEvents() {
+    if (driveEventsMemo && Date.now() - driveEventsMemo.at < 60000) return driveEventsMemo.rows;
+    const index = await driveFileIndex();
+    if (!index) return null;
+    const ownName = `events-${await driveInstallId()}.json`;
+    const rows = [];
+    for (const name of Object.keys(index).filter(n => n.startsWith('events-'))) {
+      const data = await driveReadJson(name);
+      if (data === undefined) return null;
+      for (const e of data?.events || []) rows.push({ ...e, _own: name === ownName });
+    }
+    driveEventsMemo = { at: Date.now(), rows };
+    return rows;
+  }
+
+  // ── Sync backends ────────────────────────────────────────────────────────
+  // Every network touchpoint goes through `sync` (chosen in the bootstrap):
+  // the original Supabase backend, or Google Drive for a zero-infrastructure
+  // install. Shared contract: fetchEvents/fetchSites return null on failure,
+  // pushEvents returns an HTTP-ish status (0 = never reached the backend).
+  let sync;
+  async function initSync() {
+    const name = await store.get('sync-backend', CONFIG.SYNC_BACKEND_DEFAULT);
+    sync = name === 'gdrive' ? driveBackend : supabaseBackend;
+  }
+
+  const supabaseBackend = {
+    name: 'supabase',
+    label: 'Supabase',
+    async isConnected() {
+      return !!(await store.get('auth-session', null));
+    },
+    async accountLabel() {
+      // The email lives in the access token's JWT payload — decode it
+      // (base64url), and return null if anything about it surprises us.
+      try {
+        const session = await store.get('auth-session', null);
+        const b64 = session.access_token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+        return JSON.parse(atob(b64)).email || null;
+      } catch {
+        return null;
+      }
+    },
+    connect() {
+      openAuthPage();
+    },
+    // Local-only: deletes this device's tokens without revoking anything
+    // server-side — other devices stay signed in, and queued events survive
+    // to sync after the next sign-in.
+    async disconnect() {
+      await GM.deleteValue('auth-session');
+    },
+    async pushEvents(events) {
+      const session = await getSession();
+      if (!session) return 0;
+      return postEvents(events, session);
+    },
+    async fetchEvents(sinceIso, untilIso) {
+      const session = await getSession();
+      if (!session) return null;
+      try {
+        const url = `${CONFIG.SUPABASE_URL}/rest/v1/events`
+          + '?select=id,host,event_type,client_created_at,cycles,session_mins,device'
+          + '&order=client_created_at.desc&limit=1000'
+          + `&client_created_at=gte.${encodeURIComponent(sinceIso)}`
+          + (untilIso ? `&client_created_at=lt.${encodeURIComponent(untilIso)}` : '');
+        const res = await gmRequest({
+          method: 'GET', url,
+          headers: { apikey: CONFIG.SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}` },
+        });
+        const rows = JSON.parse(res.responseText);
+        return Array.isArray(rows) ? rows : null;
+      } catch {
+        return null;
+      }
+    },
+    // The sites SELECT policy is public, so this works signed out too.
+    async fetchSites() {
+      try {
+        const res = await gmRequest({
+          method: 'GET',
+          url: `${CONFIG.SUPABASE_URL}/rest/v1/sites?select=*`,
+          headers: { apikey: CONFIG.SUPABASE_ANON_KEY },
+        });
+        const rows = JSON.parse(res.responseText);
+        return Array.isArray(rows) ? rows : null;
+      } catch {
+        return null;
+      }
+    },
+    async headers(session, extra = {}) {
+      return {
+        apikey: CONFIG.SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${session.access_token}`,
+        'Content-Type': 'application/json',
+        ...extra,
+      };
+    },
+    async addSite(newHost, display) {
+      const session = await getSession();
+      if (!session) return false;
+      try {
+        const res = await gmRequest({
+          method: 'POST',
+          url: `${CONFIG.SUPABASE_URL}/rest/v1/sites`,
+          headers: await this.headers(session, { Prefer: 'resolution=ignore-duplicates' }),
+          data: JSON.stringify([{ host: newHost, display_name: display }]),
+        });
+        return res.status >= 200 && res.status < 300;
+      } catch {
+        return false;
+      }
+    },
+    async updateSite(oldHost, newHost, newName, entry) {
+      const session = await getSession();
+      if (!session) return false;
+      try {
+        if (newHost === oldHost) {
+          const res = await gmRequest({
+            method: 'PATCH',
+            url: `${CONFIG.SUPABASE_URL}/rest/v1/sites?host=eq.${encodeURIComponent(oldHost)}`,
+            headers: await this.headers(session),
+            data: JSON.stringify({ display_name: newName }),
+          });
+          return res.status >= 200 && res.status < 300;
+        }
+        // Host is the primary key: insert the new row first — carrying the
+        // old row's avg_minutes_saved so the tuned heuristic survives — and
+        // delete the old one only once the insert landed.
+        const ins = await gmRequest({
+          method: 'POST',
+          url: `${CONFIG.SUPABASE_URL}/rest/v1/sites`,
+          headers: await this.headers(session, { Prefer: 'resolution=ignore-duplicates' }),
+          data: JSON.stringify([{
+            host: newHost,
+            display_name: newName,
+            ...(entry?.avg_minutes_saved != null ? { avg_minutes_saved: entry.avg_minutes_saved } : {}),
+          }]),
+        });
+        if (!(ins.status >= 200 && ins.status < 300)) return false;
+        const del = await gmRequest({
+          method: 'DELETE',
+          url: `${CONFIG.SUPABASE_URL}/rest/v1/sites?host=eq.${encodeURIComponent(oldHost)}`,
+          headers: await this.headers(session),
+        });
+        return del.status >= 200 && del.status < 300;
+      } catch {
+        return false;
+      }
+    },
+    async removeSite(oldHost) {
+      const session = await getSession();
+      if (!session) return false;
+      try {
+        const res = await gmRequest({
+          method: 'DELETE',
+          url: `${CONFIG.SUPABASE_URL}/rest/v1/sites?host=eq.${encodeURIComponent(oldHost)}`,
+          headers: await this.headers(session),
+        });
+        return res.status >= 200 && res.status < 300;
+      } catch {
+        return false;
+      }
+    },
+  };
+
+  const driveBackend = {
+    name: 'gdrive',
+    label: 'Google Drive',
+    async isConnected() {
+      const auth = await store.get('gdrive-auth', null);
+      return !!auth?.refresh_token;
+    },
+    async accountLabel() {
+      return (await store.get('gdrive-auth', null))?.email || null;
+    },
+    // OAuth device flow: show a short code, the user enters it at
+    // google.com/device on any signed-in device, and we poll for the grant.
+    // The only OAuth flow a userscript can run natively (no redirect URI),
+    // and Google allows exactly the Drive scopes we need on it.
+    async connect(statusEl, onDone) {
+      const status = msg => { if (statusEl) statusEl.textContent = msg; };
+      const client = await driveClient();
+      if (!client.id || !client.secret) {
+        status('Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in the script CONFIG first (a "TV and Limited Input" OAuth client).');
+        return;
+      }
+      try {
+        const res = await gmRequest({
+          method: 'POST',
+          url: 'https://oauth2.googleapis.com/device/code',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          data: `client_id=${encodeURIComponent(client.id)}`
+            + `&scope=${encodeURIComponent('https://www.googleapis.com/auth/drive.appdata email')}`,
+        });
+        const d = JSON.parse(res.responseText);
+        if (!d.device_code) {
+          status(`Couldn't start pairing: ${d.error || `HTTP ${res.status}`}`);
+          return;
+        }
+        status(`Enter code ${d.user_code} at ${d.verification_url} (code copied)`);
+        try { navigator.clipboard?.writeText(d.user_code); } catch {}
+        window.open(d.verification_url, '_blank');
+        const deadline = Date.now() + d.expires_in * 1000;
+        let interval = (d.interval || 5) * 1000;
+        while (Date.now() < deadline) {
+          await new Promise(r => setTimeout(r, interval));
+          const tr = await gmRequest({
+            method: 'POST',
+            url: 'https://oauth2.googleapis.com/token',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            data: `client_id=${encodeURIComponent(client.id)}`
+              + `&client_secret=${encodeURIComponent(client.secret)}`
+              + `&device_code=${encodeURIComponent(d.device_code)}`
+              + '&grant_type=urn:ietf:params:oauth:grant-type:device_code',
+          });
+          const t = JSON.parse(tr.responseText);
+          if (t.access_token) {
+            const auth = {
+              access_token: t.access_token,
+              refresh_token: t.refresh_token,
+              expires_at: Date.now() + t.expires_in * 1000,
+            };
+            // Best-effort email for the "syncing as" line.
+            try {
+              const ui = await gmRequest({
+                method: 'GET',
+                url: 'https://www.googleapis.com/oauth2/v3/userinfo',
+                headers: { Authorization: `Bearer ${t.access_token}` },
+              });
+              auth.email = JSON.parse(ui.responseText).email || null;
+            } catch {}
+            await store.set('gdrive-auth', auth);
+            status('Connected ✓');
+            flushQueue();
+            onDone?.();
+            return;
+          }
+          if (t.error === 'slow_down') interval += 5000;
+          else if (t.error !== 'authorization_pending') {
+            status(`Pairing failed: ${t.error || 'unknown error'}`);
+            return;
+          }
+        }
+        status('Pairing code expired — try again.');
+      } catch {
+        status('Network error during pairing.');
+      }
+    },
+    async disconnect() {
+      const auth = await store.get('gdrive-auth', null);
+      if (auth?.refresh_token) {
+        // Best-effort server-side revoke; wiping the local tokens is what
+        // actually disconnects this device.
+        try {
+          await gmRequest({
+            method: 'POST',
+            url: `https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(auth.refresh_token)}`,
+          });
+        } catch {}
+      }
+      await GM.deleteValue('gdrive-auth');
+    },
+    async pushEvents(events) {
+      const name = `events-${await driveInstallId()}.json`;
+      const existing = await driveReadJson(name);
+      if (existing === undefined) return 0;
+      // Read-union-write against our own file only: idempotent on retries
+      // (union by id) and race-free (no other device writes this file).
+      const current = existing?.events || [];
+      const seen = new Set(current.map(e => e.id));
+      const merged = [...current, ...events.filter(e => !seen.has(e.id))].slice(-5000);
+      const ok = await driveWriteJson(name, { device: deviceLabel(), events: merged });
+      driveEventsMemo = null;
+      return ok ? 200 : 0;
+    },
+    async fetchEvents(sinceIso, untilIso) {
+      const rows = await driveAllEvents();
+      if (!rows) return null;
+      // ISO-8601 Z strings compare correctly as plain strings.
+      return rows.filter(e =>
+        (!sinceIso || e.client_created_at >= sinceIso)
+        && (!untilIso || e.client_created_at < untilIso));
+    },
+    async fetchSites() {
+      const sites = await driveReadJson('sites.json');
+      if (sites === undefined) return null;
+      if (sites === null) {
+        // First run against this Drive: seed with the local list (defaults
+        // included) so every other device starts from the same place.
+        const seed = await getTrackedSites();
+        await driveWriteJson('sites.json', seed);
+        return seed;
+      }
+      return sites;
+    },
+    // sites.json is shared, so concurrent edits from two devices can race —
+    // acceptable last-writer-wins for a personal, rarely-edited list.
+    async mutateSites(mutate) {
+      const sites = await this.fetchSites();
+      if (!sites) return false;
+      return driveWriteJson('sites.json', mutate(sites));
+    },
+    addSite(newHost, display) {
+      return this.mutateSites(list =>
+        list.some(s => s.host === newHost) ? list : [...list, { host: newHost, display_name: display }]);
+    },
+    updateSite(oldHost, newHost, newName) {
+      return this.mutateSites(list =>
+        list.map(s => (s.host === oldHost ? { ...s, host: newHost, display_name: newName } : s)));
+    },
+    removeSite(oldHost) {
+      return this.mutateSites(list => list.filter(s => s.host !== oldHost));
+    },
+  };
+
   // ── Event log + offline retry queue ──────────────────────────────────────
   async function logEvent(eventType, extra = {}) {
     const event = {
@@ -360,15 +744,14 @@
     if (flushing) return;
     flushing = true;
     try {
-      const session = await getSession();
-      if (!session) return;
-      // Batch-POST the whole queue, then remove exactly the sent ids from a
+      if (!sync || !(await sync.isConnected())) return;
+      // Push the whole queue, then remove exactly the sent ids from a
       // FRESH read of storage — events appended concurrently by logEvent
       // survive the filter, and the loop picks them up on the next pass.
       while (true) {
         const queue = await store.get('pending-events', []);
         if (!queue.length) return;
-        const status = await postEvents(queue, session);
+        const status = await sync.pushEvents(queue);
         if (status >= 200 && status < 300) {
           await removeFromQueue(queue.map(e => e.id));
           continue;
@@ -379,7 +762,7 @@
         // the queue forever — the original stats outage — so sync events
         // one-by-one and drop only the specific rows it permanently rejects.
         for (const event of queue) {
-          const single = await postEvents([event], session);
+          const single = await sync.pushEvents([event]);
           if ((single >= 200 && single < 300) || isPermanentReject(single)) {
             await removeFromQueue([event.id]);
           } else {
@@ -433,23 +816,12 @@
     }
   }
 
-  // This site's "minutes saved per prevented visit" heuristic, from the
-  // sites table, cached locally after the first fetch.
-  async function siteAvgMinutes(headers) {
-    const cached = await store.get(`site-avg:${host}`, null);
-    if (cached != null) return cached;
-    try {
-      const res = await gmRequest({
-        method: 'GET',
-        url: `${CONFIG.SUPABASE_URL}/rest/v1/sites?host=eq.${encodeURIComponent(host)}&select=avg_minutes_saved`,
-        headers,
-      });
-      const avg = JSON.parse(res.responseText)[0]?.avg_minutes_saved ?? 5;
-      await store.set(`site-avg:${host}`, avg);
-      return avg;
-    } catch {
-      return 5;
-    }
+  // This site's "minutes saved per prevented visit" heuristic — served from
+  // the tracked-sites cache (refreshTrackedSites keeps it in step with the
+  // backend), so it costs no extra request.
+  async function siteAvgMinutes() {
+    const entry = (await getTrackedSites()).find(s => s.host === host);
+    return entry?.avg_minutes_saved ?? 5;
   }
 
   // Prevented count: every attempt is unique — an attempt that never led to
@@ -490,21 +862,16 @@
   // `excludeId` is the just-logged "attempt" event for this page load — it's
   // excluded so the stat line reads "N attempts before this one" / the true
   // previous last-use, regardless of whether it has finished syncing yet.
-  async function fetchRemoteStats(session, excludeId) {
+  // Filtering happens client-side on the shared fetchEvents contract.
+  async function fetchRemoteStats(excludeId) {
     try {
       const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-      const url = `${CONFIG.SUPABASE_URL}/rest/v1/events`
-        + `?host=eq.${encodeURIComponent(host)}`
-        + `&client_created_at=gt.${encodeURIComponent(since)}`
-        + `&id=neq.${encodeURIComponent(excludeId)}`
-        + `&event_type=in.(attempt,proceeded)`
-        + `&select=event_type,client_created_at&order=client_created_at.desc`;
-      const headers = { apikey: CONFIG.SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}` };
-      const [res, avgMins] = await Promise.all([
-        gmRequest({ method: 'GET', url, headers }),
-        siteAvgMinutes(headers),
-      ]);
-      const rows = JSON.parse(res.responseText);
+      const [all, avgMins] = await Promise.all([sync.fetchEvents(since), siteAvgMinutes()]);
+      if (!all) return null;
+      const rows = all
+        .filter(r => r.host === host && r.id !== excludeId
+          && (r.event_type === 'attempt' || r.event_type === 'proceeded'))
+        .sort((a, b) => (a.client_created_at < b.client_created_at ? 1 : -1)); // newest first
       const attempts = rows.filter(r => r.event_type === 'attempt');
       const proceeded = rows.filter(r => r.event_type === 'proceeded').length;
       const stats = {
@@ -567,11 +934,12 @@
   }
 
   // One remote fetch per page load (re-keyed at midnight), split into this
-  // device's rows vs every other device's — by device label, so two devices
-  // sharing a label (e.g. twin "Mac Chrome" setups) should pin distinct
+  // device's rows vs every other device's. Drive rows carry an exact _own
+  // flag (per-install files); Supabase rows fall back to the device label,
+  // so twin setups there (two "Mac Chrome"s) should pin distinct
   // CONFIG.DEVICE_NAMEs. A failed fetch is NOT memoized: the next budget
   // check retries instead of running ledger-only until midnight.
-  // Resolves null when signed out or the request fails.
+  // Resolves null when not connected or the request fails.
   let remoteUsedMemo = null;
   function remoteUnlockUsedToday() {
     if (remoteUsedMemo?.day !== todayKey()) {
@@ -580,21 +948,13 @@
         day,
         promise: (async () => {
           try {
-            const session = await getSession();
-            if (!session) return null;
-            const url = `${CONFIG.SUPABASE_URL}/rest/v1/events`
-              + `?event_type=in.(proceeded,relocked)`
-              + `&client_created_at=gte.${encodeURIComponent(startOfToday().toISOString())}`
-              + `&select=event_type,session_mins,device&limit=1000`;
-            const res = await gmRequest({
-              method: 'GET', url,
-              headers: { apikey: CONFIG.SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}` },
-            });
-            const rows = JSON.parse(res.responseText);
-            if (!Array.isArray(rows)) return null;
+            const all = await sync.fetchEvents(startOfToday().toISOString());
+            if (!all) return null;
+            const rows = all.filter(r => r.event_type === 'proceeded' || r.event_type === 'relocked');
             const mine = deviceLabel();
+            const isOwn = r => (r._own !== undefined ? r._own : r.device === mine);
             const sum = which => Math.max(0, rows.filter(which).reduce((t, r) => t + budgetDelta(r), 0));
-            return { own: sum(r => r.device === mine), others: sum(r => r.device !== mine) };
+            return { own: sum(isOwn), others: sum(r => !isOwn(r)) };
           } catch {
             return null;
           }
@@ -884,6 +1244,11 @@
     .mdt-set-note { text-align: center !important; font-size: 0.8rem !important;
       opacity: 0.55 !important; margin: 0.75rem 0 0 !important; }
     .mdt-set-foot { text-align: center !important; margin: 1.5rem 0 0 !important; }
+    .mdt-p-switch { display: block !important; margin: 0.6rem auto 0 !important; background: none !important;
+      border: none !important; color: inherit !important; opacity: 0.45 !important;
+      font-size: 0.75rem !important; cursor: pointer !important; font-family: inherit !important;
+      text-decoration: underline !important; }
+    .mdt-p-switch:hover { opacity: 0.8 !important; }
   `);
 
   function el(tag, className, text) {
@@ -998,24 +1363,17 @@
     return `${weeks} wk${weeks === 1 ? '' : 's'}`;
   }
 
-  // One events fetch per period, aggregated client-side — event volume is tiny
-  // (personal use), and it lets every number on the panel follow the selected
-  // period instead of being pinned to fixed server queries.
-  // PostgREST caps responses at its max-rows setting (Supabase default 1000);
-  // ordered desc so a very busy period drops oldest rows first.
+  // One events fetch per period, aggregated client-side — event volume is
+  // tiny (personal use), and it lets every number on the panel follow the
+  // selected period instead of being pinned to fixed server queries.
   async function fetchStatsData({ start, end }) {
-    const session = await getSession();
-    if (!session) return null;
-    const headers = { apikey: CONFIG.SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}` };
-    const eventsUrl = `${CONFIG.SUPABASE_URL}/rest/v1/events`
-      + `?select=host,event_type,client_created_at,cycles,session_mins&order=client_created_at.desc&limit=1000`
-      + `&client_created_at=gte.${encodeURIComponent(start.toISOString())}`
-      + `&client_created_at=lt.${encodeURIComponent(end.toISOString())}`;
-    const [evRes, siteRes] = await Promise.all([
-      gmRequest({ method: 'GET', url: eventsUrl, headers }),
-      gmRequest({ method: 'GET', url: `${CONFIG.SUPABASE_URL}/rest/v1/sites?select=*`, headers }),
+    if (!(await sync.isConnected())) return null;
+    const [events, sites] = await Promise.all([
+      sync.fetchEvents(start.toISOString(), end.toISOString()),
+      sync.fetchSites(),
     ]);
-    return { events: JSON.parse(evRes.responseText), sites: JSON.parse(siteRes.responseText) };
+    if (!events || !sites) return null;
+    return { events, sites };
   }
 
   function aggregateStats(events, sites, windowDays) {
@@ -1056,16 +1414,74 @@
     return { rows, totals, annual };
   }
 
+  // Disconnected-state CTA. Google Drive needs a one-time OAuth client
+  // (id + secret) before pairing can start — entered here rather than by
+  // editing the script, and kept in GM storage so script auto-updates never
+  // wipe it. GM storage is per-script and shared across every matched
+  // origin, so this is once per device, not once per site.
+  function buildConnectBox(onDone) {
+    const box = el('div', 'mdt-p-status', 'Not syncing — activity is only stored on this device.');
+    const slot = el('div');
+    const status = el('div', 'mdt-p-account', '');
+    box.append(slot, status);
+
+    const showConnect = () => {
+      while (slot.firstChild) slot.removeChild(slot.firstChild);
+      const btn = el('button', 'mdt-p-signin',
+        sync.name === 'gdrive' ? 'Connect Google Drive' : 'Sign in to sync');
+      btn.onclick = () => sync.connect(status, onDone);
+      slot.appendChild(btn);
+      if (sync.name === 'gdrive') {
+        const edit = el('button', 'mdt-p-switch', 'Change Google OAuth client');
+        edit.onclick = showSetup;
+        slot.appendChild(edit);
+      }
+    };
+
+    const showSetup = () => {
+      while (slot.firstChild) slot.removeChild(slot.firstChild);
+      status.textContent = '';
+      const form = el('form', 'mdt-set-form');
+      const id = el('input', 'mdt-set-input');
+      id.placeholder = 'Google OAuth client ID';
+      const secret = el('input', 'mdt-set-input');
+      secret.placeholder = 'Client secret';
+      for (const i of [id, secret]) { i.autocapitalize = 'off'; i.spellcheck = false; }
+      const save = el('button', 'mdt-set-btn', 'Save');
+      save.type = 'submit';
+      const row = el('div', 'mdt-set-formrow');
+      row.append(secret, save);
+      form.append(id, row);
+      form.onsubmit = async e => {
+        e.preventDefault();
+        if (!id.value.trim() || !secret.value.trim()) {
+          status.textContent = 'Both fields are required.';
+          return;
+        }
+        await store.set('gdrive-client', { id: id.value.trim(), secret: secret.value.trim() });
+        status.textContent = 'Saved on this device — you can connect now.';
+        showConnect();
+      };
+      slot.append(form, el('div', 'mdt-set-note',
+        'One-time setup: in Google Cloud Console enable the Drive API, add the '
+        + 'drive.appdata scope, publish the consent screen, then create an OAuth '
+        + 'client of type "TVs and Limited Input devices" and paste it here.'));
+      driveClient().then(c => { id.value = c.id || ''; secret.value = c.secret || ''; });
+    };
+
+    if (sync.name === 'gdrive') {
+      driveClient().then(c => (c.id && c.secret ? showConnect() : showSetup()));
+    } else {
+      showConnect();
+    }
+    return box;
+  }
+
   function renderPanelBody(wrap, data, windowDays) {
     // `wrap` is the panel's stats container — rebuilt wholesale per period.
     while (wrap.firstChild) wrap.removeChild(wrap.firstChild);
     if (!data) {
-      const box = el('div', 'mdt-p-status', 'Not signed in — activity is only stored on this device.');
-      box.appendChild(document.createElement('br'));
-      const btn = el('button', 'mdt-p-signin', 'Sign in to sync');
-      btn.onclick = openAuthPage;
-      box.appendChild(btn);
-      wrap.appendChild(box);
+      wrap.appendChild(buildConnectBox(() => location.reload()));
       return;
     }
     const { rows, totals, annual } = aggregateStats(data.events, data.sites, windowDays);
@@ -1228,7 +1644,7 @@
 
     const renderSites = async () => {
       while (sitesView.firstChild) sitesView.removeChild(sitesView.firstChild);
-      const signedIn = !!(await store.get('auth-session', null));
+      const signedIn = await sync.isConnected();
       const list = await getTrackedSites();
       for (const s of [...list].sort((a, b) => a.host.localeCompare(b.host))) {
         const row = el('div', 'mdt-set-row');
@@ -1320,31 +1736,35 @@
     };
     viewBtn.onclick = () => { view = view === 'stats' ? 'sites' : 'stats'; applyView(); };
 
-    // ── Account footer (which account this device syncs as + sign-out) ──
+    // ── Account footer: connection state, connect/disconnect, backend ───
     const renderFooter = async () => {
       while (footer.firstChild) footer.removeChild(footer.firstChild);
-      if (!(await store.get('auth-session', null))) return;
-      // Local-only sign-out: deletes this device's tokens without revoking
-      // anything server-side — other devices stay signed in, and queued
-      // events survive to sync after the next sign-in.
       const foot = el('div', 'mdt-set-foot');
-      const account = el('div', 'mdt-p-account', '');
-      const signOut = el('button', 'mdt-p-signout', 'Sign out on this device');
-      signOut.onclick = async () => {
-        await GM.deleteValue('auth-session');
+      footer.appendChild(foot);
+      if (await sync.isConnected()) {
+        const account = el('div', 'mdt-p-account', `Syncing via ${sync.label}`);
+        sync.accountLabel().then(l => {
+          if (l) account.textContent = `Syncing via ${sync.label} as ${l}`;
+        });
+        const out = el('button', 'mdt-p-signout',
+          sync.name === 'gdrive' ? 'Disconnect Google Drive' : 'Sign out on this device');
+        out.onclick = async () => {
+          await sync.disconnect();
+          location.reload();
+        };
+        foot.append(account, out);
+      }
+      // Not connected: no connect button here — the stats body already
+      // shows the one canonical connect CTA (a second button reads as two
+      // different actions). The footer keeps only the backend switch.
+      // Per-device backend switch — takes effect on reload.
+      const other = sync.name === 'gdrive' ? supabaseBackend : driveBackend;
+      const sw = el('button', 'mdt-p-switch', `Use ${other.label} sync instead`);
+      sw.onclick = async () => {
+        await store.set('sync-backend', other.name);
         location.reload();
       };
-      foot.append(account, signOut);
-      footer.appendChild(foot);
-      // The email lives in the access token's JWT payload — decode it lazily
-      // (base64url), and leave the line blank if anything surprises us.
-      store.get('auth-session', null).then(session => {
-        try {
-          const b64 = session.access_token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
-          const payload = JSON.parse(atob(b64));
-          if (payload.email) account.textContent = `Signed in as ${payload.email}`;
-        } catch {}
-      });
+      foot.appendChild(sw);
     };
 
     document.documentElement.appendChild(panel);
@@ -1551,8 +1971,11 @@
         `Daily unlock limit reached (${CONFIG.DAILY_UNLOCK_MAX_MINS} min) — back tomorrow.`));
     }
     if (!stats.signedIn) {
-      const signIn = el('button', 'mdt-btn-ghost', 'Not syncing — sign in');
-      signIn.onclick = openAuthPage;
+      const signIn = el('button', 'mdt-btn-ghost',
+        sync.name === 'gdrive' ? 'Not syncing — connect Google Drive' : 'Not syncing — sign in');
+      // Drive pairing lives in the stats panel footer; Supabase has its own
+      // hosted sign-in page.
+      signIn.onclick = () => (sync.name === 'gdrive' ? openStatsPanel() : openAuthPage());
       card.appendChild(signIn);
     }
   }
@@ -1678,7 +2101,7 @@
     const ui = buildOverlay();
     let currentStats = {
       ...await localStats(),
-      signedIn: !!(await store.get('auth-session', null)),
+      signedIn: await sync.isConnected(),
     };
     const attemptEvent = await logEvent('attempt');
     recordLocalAttempt();
@@ -1702,8 +2125,7 @@
     // Fresh stats patch in progressively — never interrupting a breathing
     // cycle or a picker: mid-breathing the header numbers are swapped in
     // place; the main choice screen is re-rendered wholesale.
-    const session = await getSession();
-    const fresh = session && await fetchRemoteStats(session, attemptEvent.id);
+    const fresh = (await sync.isConnected()) && await fetchRemoteStats(attemptEvent.id);
     if (fresh) {
       currentStats = { ...fresh, signedIn: true };
       if (!document.getElementById('mdt-overlay')) return;
@@ -1746,6 +2168,7 @@
     else document.addEventListener('DOMContentLoaded', adopt);
   }
 
+  await initSync();
   if (location.hostname === 'simoneroux.github.io') {
     installAuthBridge();
   } else {
