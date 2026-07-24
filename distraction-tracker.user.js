@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      2.10.1
+// @version      2.11.0
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
 // @author       Simon Roux
 // @homepageURL  https://github.com/simoneroux/breathing
@@ -74,6 +74,17 @@
     MORE_CYCLES_OPTIONS: [1, 2, 3, 4], // cycle-count choices for "More breathing"
     BREATH_CYCLES: 1,   // box-breathing cycles before the choice screen shows
     PHASE_MS: 5000,
+    // Quick redirects shown at the bottom of every overlay screen — a better
+    // thing to do than the distraction. Defaults launch Apple Shortcuts by
+    // name (create shortcuts called Read / Journal / Tasks, or point these
+    // `url`s at anything: things:///, dayone://, an app deep link, a URL).
+    // `icon` is a key in the `icons` map below. A device override lives in GM
+    // storage ('shortcuts') so edits survive @updateURL auto-updates.
+    SHORTCUTS: [
+      { label: 'Read', icon: 'read', url: 'shortcuts://run-shortcut?name=Read' },
+      { label: 'Journal', icon: 'journal', url: 'shortcuts://run-shortcut?name=Journal' },
+      { label: 'Tasks', icon: 'tasks', url: 'shortcuts://run-shortcut?name=Tasks' },
+    ],
   };
 
   // Seed list only: the live tracked-site list is the Supabase `sites` table,
@@ -1025,11 +1036,30 @@
        same y-position across the breathing, choice, and dial screens no
        matter how tall the content below it is — no jumping between screens. */
     .mdt-card { text-align: center !important;
+      /* Extra bottom padding (5.5rem) reserves room for the pinned shortcuts
+         bar so screen content never sits behind it. */
       padding: calc(clamp(2.5rem, 12vh, 6rem) + env(safe-area-inset-top, 0px)) 1.5rem
-               calc(clamp(1.5rem, 6vh, 3.5rem) + env(safe-area-inset-bottom, 0px)) !important;
+               calc(clamp(1.5rem, 6vh, 3.5rem) + 5.5rem + env(safe-area-inset-bottom, 0px)) !important;
       width: 100% !important; overflow-y: auto !important;
       display: flex !important; flex-direction: column !important; align-items: center !important;
       justify-content: flex-start !important; }
+    /* Quick-redirect shortcuts, pinned to the overlay bottom on every screen */
+    #mdt-overlay .mdt-shortcuts { position: absolute !important; left: 0 !important; right: 0 !important;
+      bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px)) !important; z-index: 1 !important;
+      display: flex !important; justify-content: center !important; gap: 0.6rem !important;
+      padding: 0 1rem !important; margin: 0 !important; pointer-events: none !important; }
+    #mdt-overlay .mdt-shortcut { pointer-events: auto !important;
+      display: flex !important; flex-direction: column !important; align-items: center !important;
+      justify-content: center !important; gap: 0.3rem !important;
+      min-width: 4.6rem !important; padding: 0.6rem 0.5rem !important;
+      border-radius: 16px !important; background: rgba(255,255,255,0.1) !important;
+      color: #fff !important; text-decoration: none !important; font-family: inherit !important;
+      font-size: 0.72rem !important; font-weight: 600 !important; letter-spacing: 0.01em !important;
+      opacity: 0.82 !important; -webkit-tap-highlight-color: transparent !important;
+      transition: background 0.2s ease, opacity 0.2s ease, transform 0.2s ease !important; }
+    #mdt-overlay .mdt-shortcut:hover { background: rgba(255,255,255,0.2) !important;
+      opacity: 1 !important; transform: translateY(-2px) !important; }
+    #mdt-overlay .mdt-shortcut-label { line-height: 1 !important; }
     /* Soft fade on each screen swap instead of an instant jump */
     .mdt-card > * { animation: mdt-fade 0.4s ease both !important; }
     @keyframes mdt-fade { from { opacity: 0; } to { opacity: 1; } }
@@ -1092,6 +1122,10 @@
       .mdt-phase { margin-bottom: 1rem !important; }
       .mdt-title { font-size: 1.2rem !important; }
       .mdt-dial { width: min(40vh, 220px) !important; margin-bottom: 0.75rem !important; }
+      /* Compact the shortcut bar on short/landscape screens */
+      .mdt-card { padding-bottom: calc(clamp(1.5rem, 6vh, 3.5rem) + 4rem + env(safe-area-inset-bottom, 0px)) !important; }
+      #mdt-overlay .mdt-shortcut { min-width: 4rem !important; padding: 0.4rem !important;
+        font-size: 0.68rem !important; }
     }
     .mdt-btn { display: block !important; width: 100% !important; max-width: 360px !important; padding: 0.9rem !important;
       margin: 0 auto 0.75rem !important;
@@ -1324,6 +1358,20 @@
     ]),
     pencil: (size = 15) => iconEl(size, [
       ['path', { d: 'M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z' }],
+    ]),
+    read: (size = 20) => iconEl(size, [
+      ['path', { d: 'M12 7v14' }],
+      ['path', { d: 'M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z' }],
+    ]),
+    journal: (size = 20) => iconEl(size, [
+      ['path', { d: 'M2 6h4' }], ['path', { d: 'M2 10h4' }],
+      ['path', { d: 'M2 14h4' }], ['path', { d: 'M2 18h4' }],
+      ['rect', { width: '16', height: '20', x: '4', y: '2', rx: '2' }],
+      ['path', { d: 'M16 2v20' }],
+    ]),
+    tasks: (size = 20) => iconEl(size, [
+      ['path', { d: 'm3 17 2 2 4-4' }], ['path', { d: 'm3 7 2 2 4-4' }],
+      ['path', { d: 'M13 6h8' }], ['path', { d: 'M13 12h8' }], ['path', { d: 'M13 18h8' }],
     ]),
   };
 
@@ -1908,12 +1956,43 @@
     document.documentElement.appendChild(gear);
   }
 
+  // Quick-redirect row pinned to the bottom of the overlay — a better thing
+  // to do than the distraction. A GM-storage override ('shortcuts') wins over
+  // CONFIG.SHORTCUTS so per-device edits survive @updateURL auto-updates.
+  async function shortcutList() {
+    const override = await store.get('shortcuts', null);
+    return Array.isArray(override) ? override : (CONFIG.SHORTCUTS || []);
+  }
+
+  async function buildShortcutsBar() {
+    const list = await shortcutList();
+    if (!list.length) return null;
+    const bar = el('div', 'mdt-shortcuts');
+    for (const s of list) {
+      // A real <a> (not window.open) so iOS reliably hands custom app schemes
+      // like shortcuts:// to the OS; opens in a new context so the tracked
+      // tab — and this overlay — stay put underneath.
+      const a = document.createElement('a');
+      a.className = 'mdt-shortcut';
+      a.href = s.url;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      if (icons[s.icon]) a.appendChild(icons[s.icon](22));
+      a.appendChild(el('span', 'mdt-shortcut-label', s.label));
+      bar.appendChild(a);
+    }
+    return bar;
+  }
+
   function buildOverlay() {
     const overlay = el('div');
     overlay.id = 'mdt-overlay';
     const card = el('div', 'mdt-card');
     overlay.appendChild(card);
     document.documentElement.appendChild(overlay);
+    // Bottom shortcut bar lives on the overlay (not the card), so it persists
+    // across every card rebuild — breathing, choice, and the pickers.
+    buildShortcutsBar().then(bar => { if (bar && overlay.isConnected) overlay.appendChild(bar); });
     // Same z-index wins by DOM order — keep the gear clickable over the overlay.
     const gear = document.getElementById('mdt-gear');
     if (gear) document.documentElement.appendChild(gear);
