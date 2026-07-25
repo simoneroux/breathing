@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      2.11.0
+// @version      2.11.1
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
 // @author       Simon Roux
 // @homepageURL  https://github.com/simoneroux/breathing
@@ -1073,8 +1073,8 @@
        resets that beat bare single-class selectors. The circle is also
        self-centering (absolute + translate baked into both transform states)
        so it never depends on the parent's flex properties surviving. */
-    #mdt-overlay .mdt-stage { position: relative !important;
-      width: clamp(200px, 52vmin, 480px) !important; height: clamp(200px, 52vmin, 480px) !important;
+    #mdt-overlay .mdt-stage { position: relative !important; flex-shrink: 0 !important;
+      width: clamp(200px, 52vmin, 480px) !important; aspect-ratio: 1 / 1 !important; height: auto !important;
       margin: clamp(0.5rem, 2.5vh, 1.5rem) auto clamp(1.4rem, 4vh, 2.5rem) !important;
       display: flex !important; align-items: center !important; justify-content: center !important; }
     #mdt-overlay .mdt-square { position: absolute !important; inset: 0 !important; border: 1.5px solid rgba(255,255,255,0.3) !important;
@@ -1117,7 +1117,7 @@
     @media (max-height: 600px) {
       .mdt-big-num { font-size: 2rem !important; }
       .mdt-stats { margin-bottom: 0.75rem !important; line-height: 1.4 !important; }
-      #mdt-overlay .mdt-stage { width: clamp(150px, 48vh, 300px) !important; height: clamp(150px, 48vh, 300px) !important;
+      #mdt-overlay .mdt-stage { width: clamp(150px, 48vh, 300px) !important; height: auto !important;
         margin: 0.25rem auto 1rem !important; }
       .mdt-phase { margin-bottom: 1rem !important; }
       .mdt-title { font-size: 1.2rem !important; }
@@ -1968,6 +1968,17 @@
     const list = await shortcutList();
     if (!list.length) return null;
     const bar = el('div', 'mdt-shortcuts');
+    // Geometry pinned inline (CSSOM !important beats any author stylesheet
+    // regardless of specificity) — some tracked sites (The Verge, Lapresse)
+    // ship aggressive resets on a/div/svg/line-height that otherwise squash
+    // these. Background + hover stay in the stylesheet so :hover can win.
+    setImportant(bar, {
+      position: 'absolute', left: '0', right: '0',
+      bottom: 'calc(0.75rem + env(safe-area-inset-bottom, 0px))', 'z-index': '1',
+      display: 'flex', 'flex-direction': 'row', 'align-items': 'stretch',
+      'justify-content': 'center', gap: '0.6rem', padding: '0 1rem', margin: '0',
+      'box-sizing': 'border-box', 'pointer-events': 'none',
+    });
     for (const s of list) {
       // A real <a> (not window.open) so iOS reliably hands custom app schemes
       // like shortcuts:// to the OS; opens in a new context so the tracked
@@ -1977,8 +1988,20 @@
       a.href = s.url;
       a.target = '_blank';
       a.rel = 'noopener noreferrer';
+      setImportant(a, {
+        'pointer-events': 'auto', display: 'flex', 'flex-direction': 'column',
+        'align-items': 'center', 'justify-content': 'center', gap: '0.3rem',
+        'box-sizing': 'border-box', 'min-width': '4.6rem', width: 'auto', height: 'auto',
+        padding: '0.6rem 0.5rem', margin: '0', border: 'none', 'border-radius': '16px',
+        color: '#fff', 'text-decoration': 'none', 'text-transform': 'none',
+        'font-family': '-apple-system, BlinkMacSystemFont, sans-serif',
+        'font-size': '0.72rem', 'font-weight': '600', 'line-height': '1.1',
+        'letter-spacing': '0.01em', cursor: 'pointer',
+      });
       if (icons[s.icon]) a.appendChild(icons[s.icon](22));
-      a.appendChild(el('span', 'mdt-shortcut-label', s.label));
+      const label = el('span', 'mdt-shortcut-label', s.label);
+      setImportant(label, { 'line-height': '1', margin: '0', 'white-space': 'nowrap' });
+      a.appendChild(label);
       bar.appendChild(a);
     }
     return bar;
@@ -2029,7 +2052,12 @@
     // left to a specificity fight. The inhale scale is driven through
     // setScale below for the same reason — an inline transform would shadow
     // any class-based transform state anyway.
-    setImportant(stage, { position: 'relative' });
+    // flex-shrink:0 + aspect-ratio keep the stage square: without them the
+    // card's flex column compresses the stage's height when vertical space is
+    // tight (short viewport, or the shortcuts bar's reserved padding), turning
+    // the 44%×44% circle into an ellipse. height:auto lets aspect-ratio derive
+    // height from the (responsive) width so the box stays 1:1 on every screen.
+    setImportant(stage, { position: 'relative', 'flex-shrink': '0', 'aspect-ratio': '1 / 1', height: 'auto' });
     setImportant(square, { position: 'absolute', inset: '0', margin: '0' });
     setImportant(dotTrack, {
       position: 'absolute', inset: '0', margin: '0',
