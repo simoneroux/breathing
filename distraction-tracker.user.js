@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      2.12.0
+// @version      2.12.1
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
 // @author       Simon Roux
 // @homepageURL  https://github.com/simoneroux/breathing
@@ -72,7 +72,8 @@
     UNLOCK_DEFAULT_MINS: 5,  // dial starting position
     DAILY_UNLOCK_MAX_MINS: 60, // total unlock budget per day, all sites combined
     MORE_CYCLES_OPTIONS: [1, 2, 3, 4], // cycle-count choices for "More breathing"
-    BREATH_CYCLES: 1,   // box-breathing cycles before the choice screen shows
+    BREATH_CYCLES: 2,   // default cycles on the gated start screen (dropdown)
+    BREATH_CYCLE_OPTIONS: [1, 2, 3, 4, 5], // choices in the start-screen dropdown
     PHASE_MS: 5000,
     // Quick redirects shown at the bottom of every overlay screen — a better
     // thing to do than the distraction. Defaults launch Apple Shortcuts by
@@ -1103,12 +1104,18 @@
     #mdt-overlay .mdt-circle.mdt-inhale { transform: translate(-50%, -50%) scale(2.15) !important; }
     #mdt-overlay .mdt-circle.mdt-hold-circle { background: rgba(30,36,64,0.45) !important; }
     /* Play button (gated start) — geometry is pinned inline in showBreathing;
-       these are the visual layer + hover (kept in CSS so :hover can win). */
-    #mdt-overlay .mdt-play { background: rgba(255,255,255,0.92) !important; color: #3f4877 !important;
-      box-shadow: 0 6px 24px rgba(0,0,0,0.28) !important;
+       these are the visual layer + hover (kept in CSS so :hover can win).
+       Subtle: translucent, thin ring, no heavy shadow — sits quietly on the
+       breathing circle rather than shouting like a media player. */
+    #mdt-overlay .mdt-play { background: rgba(255,255,255,0.14) !important; color: #fff !important;
+      border: 1px solid rgba(255,255,255,0.3) !important; box-shadow: none !important;
+      -webkit-backdrop-filter: blur(2px) !important; backdrop-filter: blur(2px) !important;
       -webkit-tap-highlight-color: transparent !important;
-      transition: background 0.2s ease, box-shadow 0.2s ease !important; }
-    #mdt-overlay .mdt-play:hover { background: #fff !important; box-shadow: 0 8px 30px rgba(0,0,0,0.34) !important; }
+      transition: background 0.2s ease, transform 0.2s ease !important; }
+    #mdt-overlay .mdt-play:hover { background: rgba(255,255,255,0.24) !important; }
+    /* Start-screen cycle dropdown — geometry pinned inline in buildCyclePicker */
+    #mdt-overlay .mdt-cyclepick-select:hover { background: rgba(255,255,255,0.18) !important; }
+    #mdt-overlay .mdt-cyclepick-select option { color: #1c1c28 !important; background: #fff !important; }
     .mdt-phase { font-size: clamp(1.1rem, 2.8vw, 1.5rem) !important; font-weight: 500 !important;
       margin: 0 0 2rem !important; min-height: 1.4em !important; }
     .mdt-big-num { font-size: clamp(2.6rem, 9vmin, 4.2rem) !important; font-weight: 800 !important;
@@ -1380,6 +1387,7 @@
       ['path', { d: 'm3 17 2 2 4-4' }], ['path', { d: 'm3 7 2 2 4-4' }],
       ['path', { d: 'M13 6h8' }], ['path', { d: 'M13 12h8' }], ['path', { d: 'M13 18h8' }],
     ]),
+    chevron: (size = 16) => iconEl(size, [['path', { d: 'm6 9 6 6 6-6' }]]),
     // Filled play triangle, nudged right of center so it reads as centered.
     play: (size = 30) => {
       const svg = svgEl('svg', { viewBox: '0 0 24 24', fill: 'currentColor', stroke: 'none' });
@@ -2111,10 +2119,10 @@
     void circle.offsetWidth;
 
     const wait = ms => new Promise(r => setTimeout(r, ms));
-    const runCycles = () => {
+    const runCycles = (count) => {
       dot.classList.add('mdt-running');
       (async () => {
-        for (let cycle = 0; cycle < cycles; cycle++) {
+        for (let cycle = 0; cycle < count; cycle++) {
           phase.textContent = 'Breathe in';
           setScale(2.15);
           overlay.classList.remove('mdt-hold');
@@ -2138,33 +2146,75 @@
           await wait(CONFIG.PHASE_MS);
         }
         overlay.classList.remove('mdt-hold');
-        logEvent('breathing', { cycles });
+        logEvent('breathing', { cycles: count });
         onDone();
       })();
     };
 
     if (gated) {
-      // Play button in the centre of the circle — a deliberate start.
+      // Subtle play button in the centre of the circle — a deliberate start.
       const playBtn = el('button', 'mdt-play');
       playBtn.title = 'Start breathing';
-      playBtn.appendChild(icons.play(30));
+      playBtn.appendChild(icons.play(24));
       setImportant(playBtn, {
         position: 'absolute', left: '50%', top: '50%',
-        transform: 'translate(-50%, -50%)', width: '76px', height: '76px',
-        'border-radius': '50%', border: 'none', margin: '0', padding: '0',
+        transform: 'translate(-50%, -50%)', width: '60px', height: '60px',
+        'border-radius': '50%', margin: '0', padding: '0',
         display: 'flex', 'align-items': 'center', 'justify-content': 'center',
         cursor: 'pointer', 'z-index': '2', 'box-sizing': 'border-box',
       });
-      playBtn.onclick = () => {
+      stage.appendChild(playBtn);
+
+      // Cycle-count dropdown under the prompt (default from CONFIG.BREATH_CYCLES).
+      let selected = cycles;
+      const picker = buildCyclePicker(cycles, n => { selected = n; });
+      phase.after(picker);
+
+      const start = () => {
         playBtn.remove();
+        picker.remove();
         phase.textContent = 'Breathe in';
         void circle.offsetWidth; // flush before the first scale-up
-        runCycles();
+        runCycles(selected);
       };
-      stage.appendChild(playBtn);
+      playBtn.onclick = start;
     } else {
-      runCycles();
+      runCycles(cycles);
     }
+  }
+
+  // Subtle native <select> for the start-screen cycle count. Geometry pinned
+  // inline so hostile site CSS can't distort it; the popup list is OS-native.
+  function buildCyclePicker(defaultN, onChange) {
+    const wrap = el('div', 'mdt-cyclepick');
+    setImportant(wrap, {
+      position: 'relative', display: 'inline-flex', 'align-items': 'center',
+      margin: '0 auto', 'box-sizing': 'border-box',
+    });
+    const select = document.createElement('select');
+    select.className = 'mdt-cyclepick-select';
+    for (const n of CONFIG.BREATH_CYCLE_OPTIONS) {
+      const opt = document.createElement('option');
+      opt.value = String(n);
+      opt.textContent = `${n} breathing cycle${n === 1 ? '' : 's'}`;
+      if (n === defaultN) opt.selected = true;
+      select.appendChild(opt);
+    }
+    setImportant(select, {
+      appearance: 'none', '-webkit-appearance': 'none', '-moz-appearance': 'none',
+      background: 'rgba(255,255,255,0.12)', color: '#fff', border: '1px solid rgba(255,255,255,0.22)',
+      'border-radius': '999px', padding: '0.5rem 2.2rem 0.5rem 1.1rem', margin: '0',
+      font: '600 0.9rem -apple-system, BlinkMacSystemFont, sans-serif', 'line-height': '1.2',
+      'text-align': 'center', 'text-align-last': 'center', cursor: 'pointer',
+      'box-sizing': 'border-box', outline: 'none', 'box-shadow': 'none', width: 'auto', height: 'auto',
+    });
+    select.onchange = () => onChange(+select.value);
+    const chev = icons.chevron(16);
+    setImportant(chev, { position: 'absolute', right: '0.85rem', top: '50%',
+      transform: 'translateY(-50%)', 'pointer-events': 'none', opacity: '0.8',
+      width: '16px', height: '16px', display: 'block' });
+    wrap.append(select, chev);
+    return wrap;
   }
 
   function abandonSite() {
