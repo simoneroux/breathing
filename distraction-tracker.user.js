@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      2.11.1
+// @version      2.12.0
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
 // @author       Simon Roux
 // @homepageURL  https://github.com/simoneroux/breathing
@@ -1102,6 +1102,13 @@
       transition: transform 5s cubic-bezier(0.4,0,0.2,1), background 1.5s ease !important; }
     #mdt-overlay .mdt-circle.mdt-inhale { transform: translate(-50%, -50%) scale(2.15) !important; }
     #mdt-overlay .mdt-circle.mdt-hold-circle { background: rgba(30,36,64,0.45) !important; }
+    /* Play button (gated start) — geometry is pinned inline in showBreathing;
+       these are the visual layer + hover (kept in CSS so :hover can win). */
+    #mdt-overlay .mdt-play { background: rgba(255,255,255,0.92) !important; color: #3f4877 !important;
+      box-shadow: 0 6px 24px rgba(0,0,0,0.28) !important;
+      -webkit-tap-highlight-color: transparent !important;
+      transition: background 0.2s ease, box-shadow 0.2s ease !important; }
+    #mdt-overlay .mdt-play:hover { background: #fff !important; box-shadow: 0 8px 30px rgba(0,0,0,0.34) !important; }
     .mdt-phase { font-size: clamp(1.1rem, 2.8vw, 1.5rem) !important; font-weight: 500 !important;
       margin: 0 0 2rem !important; min-height: 1.4em !important; }
     .mdt-big-num { font-size: clamp(2.6rem, 9vmin, 4.2rem) !important; font-weight: 800 !important;
@@ -1373,6 +1380,14 @@
       ['path', { d: 'm3 17 2 2 4-4' }], ['path', { d: 'm3 7 2 2 4-4' }],
       ['path', { d: 'M13 6h8' }], ['path', { d: 'M13 12h8' }], ['path', { d: 'M13 18h8' }],
     ]),
+    // Filled play triangle, nudged right of center so it reads as centered.
+    play: (size = 30) => {
+      const svg = svgEl('svg', { viewBox: '0 0 24 24', fill: 'currentColor', stroke: 'none' });
+      setImportant(svg, { width: `${size}px`, height: `${size}px`, display: 'block',
+        'pointer-events': 'none', 'margin-left': '2px' });
+      svg.appendChild(svgEl('path', { d: 'M8 5.14v13.72a1 1 0 0 0 1.52.86l10.5-6.86a1 1 0 0 0 0-1.72L9.52 4.28A1 1 0 0 0 8 5.14z' }));
+      return svg;
+    },
   };
 
   // ── In-page stats panel (opened via the gear icon) ───────────────────────
@@ -2038,14 +2053,19 @@
 
   // Renders the breathing view into the card and runs `cycles` box cycles;
   // re-runnable ("More breathing" on the choice screen). Completed runs are
-  // logged as a 'breathing' event carrying the cycle count.
-  function showBreathing({ overlay, card }, cycles, stats, onDone) {
+  // logged as a 'breathing' event carrying the cycle count. When `gated`, the
+  // cycles don't auto-start — a play button in the centre waits for a
+  // deliberate tap first (the initial interception; "More breathing" is
+  // already a deliberate choice, so it starts straight away).
+  function showBreathing({ overlay, card }, cycles, stats, onDone, { gated = false } = {}) {
     while (card.firstChild) card.removeChild(card.firstChild);
     const stage = el('div', 'mdt-stage');
     const square = el('div', 'mdt-square');
     const circle = el('div', 'mdt-circle');
     const dotTrack = el('div', 'mdt-dot-track');
-    dotTrack.appendChild(el('div', 'mdt-dot mdt-running'));
+    const dot = el('div', 'mdt-dot');
+    if (!gated) dot.classList.add('mdt-running'); // running dot starts with the cycles
+    dotTrack.appendChild(dot);
     stage.append(square, dotTrack, circle);
     // Geometry pinned inline (see setImportant): the stylesheet still carries
     // these rules for sane sites, but the layout-critical properties can't be
@@ -2072,7 +2092,7 @@
     });
     const setScale = s =>
       circle.style.setProperty('transform', `translate(-50%, -50%) scale(${s})`, 'important');
-    const phase = el('div', 'mdt-phase', 'Breathe in');
+    const phase = el('div', 'mdt-phase', gated ? 'When you’re ready' : 'Breathe in');
     // Budget notice lives on the breathing screen itself: when the daily
     // unlock time is spent, say so here — the user learns the outcome up
     // front instead of after breathing through to the choice screen. The
@@ -2091,34 +2111,60 @@
     void circle.offsetWidth;
 
     const wait = ms => new Promise(r => setTimeout(r, ms));
-    (async () => {
-      for (let cycle = 0; cycle < cycles; cycle++) {
+    const runCycles = () => {
+      dot.classList.add('mdt-running');
+      (async () => {
+        for (let cycle = 0; cycle < cycles; cycle++) {
+          phase.textContent = 'Breathe in';
+          setScale(2.15);
+          overlay.classList.remove('mdt-hold');
+          circle.classList.remove('mdt-hold-circle');
+          await wait(CONFIG.PHASE_MS);
+
+          phase.textContent = 'Hold';
+          overlay.classList.add('mdt-hold');
+          circle.classList.add('mdt-hold-circle');
+          await wait(CONFIG.PHASE_MS);
+
+          phase.textContent = 'Breathe out';
+          setScale(1);
+          overlay.classList.remove('mdt-hold');
+          circle.classList.remove('mdt-hold-circle');
+          await wait(CONFIG.PHASE_MS);
+
+          phase.textContent = 'Hold';
+          overlay.classList.add('mdt-hold');
+          circle.classList.add('mdt-hold-circle');
+          await wait(CONFIG.PHASE_MS);
+        }
+        overlay.classList.remove('mdt-hold');
+        logEvent('breathing', { cycles });
+        onDone();
+      })();
+    };
+
+    if (gated) {
+      // Play button in the centre of the circle — a deliberate start.
+      const playBtn = el('button', 'mdt-play');
+      playBtn.title = 'Start breathing';
+      playBtn.appendChild(icons.play(30));
+      setImportant(playBtn, {
+        position: 'absolute', left: '50%', top: '50%',
+        transform: 'translate(-50%, -50%)', width: '76px', height: '76px',
+        'border-radius': '50%', border: 'none', margin: '0', padding: '0',
+        display: 'flex', 'align-items': 'center', 'justify-content': 'center',
+        cursor: 'pointer', 'z-index': '2', 'box-sizing': 'border-box',
+      });
+      playBtn.onclick = () => {
+        playBtn.remove();
         phase.textContent = 'Breathe in';
-        setScale(2.15);
-        overlay.classList.remove('mdt-hold');
-        circle.classList.remove('mdt-hold-circle');
-        await wait(CONFIG.PHASE_MS);
-
-        phase.textContent = 'Hold';
-        overlay.classList.add('mdt-hold');
-        circle.classList.add('mdt-hold-circle');
-        await wait(CONFIG.PHASE_MS);
-
-        phase.textContent = 'Breathe out';
-        setScale(1);
-        overlay.classList.remove('mdt-hold');
-        circle.classList.remove('mdt-hold-circle');
-        await wait(CONFIG.PHASE_MS);
-
-        phase.textContent = 'Hold';
-        overlay.classList.add('mdt-hold');
-        circle.classList.add('mdt-hold-circle');
-        await wait(CONFIG.PHASE_MS);
-      }
-      overlay.classList.remove('mdt-hold');
-      logEvent('breathing', { cycles });
-      onDone();
-    })();
+        void circle.offsetWidth; // flush before the first scale-up
+        runCycles();
+      };
+      stage.appendChild(playBtn);
+    } else {
+      runCycles();
+    }
   }
 
   function abandonSite() {
@@ -2303,7 +2349,8 @@
       });
     };
 
-    showBreathing(ui, CONFIG.BREATH_CYCLES, currentStats, renderChoice);
+    // Gated: the interception waits for a deliberate play tap before breathing.
+    showBreathing(ui, CONFIG.BREATH_CYCLES, currentStats, renderChoice, { gated: true });
 
     // Fresh stats patch in progressively — never interrupting a breathing
     // cycle or a picker: mid-breathing the header numbers are swapped in
