@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      2.13.0
+// @version      2.14.0
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
 // @author       Simon Roux
 // @homepageURL  https://github.com/simoneroux/breathing
@@ -1037,30 +1037,15 @@
        same y-position across the breathing, choice, and dial screens no
        matter how tall the content below it is — no jumping between screens. */
     .mdt-card { text-align: center !important;
-      /* Extra bottom padding (5.5rem) reserves room for the pinned shortcuts
-         bar so screen content never sits behind it. */
       padding: calc(clamp(2.5rem, 12vh, 6rem) + env(safe-area-inset-top, 0px)) 1.5rem
-               calc(clamp(1.5rem, 6vh, 3.5rem) + 5.5rem + env(safe-area-inset-bottom, 0px)) !important;
+               calc(clamp(1.5rem, 6vh, 3.5rem) + env(safe-area-inset-bottom, 0px)) !important;
       width: 100% !important; overflow-y: auto !important;
       display: flex !important; flex-direction: column !important; align-items: center !important;
       justify-content: flex-start !important; }
-    /* Quick-redirect shortcuts, pinned to the overlay bottom on every screen */
-    #mdt-overlay .mdt-shortcuts { position: absolute !important; left: 0 !important; right: 0 !important;
-      bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px)) !important; z-index: 1 !important;
-      display: flex !important; justify-content: center !important; gap: 0.6rem !important;
-      padding: 0 1rem !important; margin: 0 !important; pointer-events: none !important; }
-    #mdt-overlay .mdt-shortcut { pointer-events: auto !important;
-      display: flex !important; flex-direction: column !important; align-items: center !important;
-      justify-content: center !important; gap: 0.3rem !important;
-      min-width: 4.6rem !important; padding: 0.6rem 0.5rem !important;
-      border-radius: 16px !important; background: rgba(255,255,255,0.1) !important;
-      color: #fff !important; text-decoration: none !important; font-family: inherit !important;
-      font-size: 0.72rem !important; font-weight: 600 !important; letter-spacing: 0.01em !important;
-      opacity: 0.82 !important; -webkit-tap-highlight-color: transparent !important;
-      transition: background 0.2s ease, opacity 0.2s ease, transform 0.2s ease !important; }
-    #mdt-overlay .mdt-shortcut:hover { background: rgba(255,255,255,0.2) !important;
-      opacity: 1 !important; transform: translateY(-2px) !important; }
-    #mdt-overlay .mdt-shortcut-label { line-height: 1 !important; }
+    /* Quick-redirect links — one compact row under "Continue to …" */
+    #mdt-overlay .mdt-shortcut { opacity: 0.7 !important; -webkit-tap-highlight-color: transparent !important;
+      transition: opacity 0.2s ease !important; }
+    #mdt-overlay .mdt-shortcut:hover { opacity: 1 !important; }
     /* Soft fade on each screen swap instead of an instant jump */
     .mdt-card > * { animation: mdt-fade 0.4s ease both !important; }
     @keyframes mdt-fade { from { opacity: 0; } to { opacity: 1; } }
@@ -1143,10 +1128,6 @@
       .mdt-phase { margin-bottom: 1rem !important; }
       .mdt-title { font-size: 1.2rem !important; }
       .mdt-dial { width: min(40vh, 220px) !important; margin-bottom: 0.75rem !important; }
-      /* Compact the shortcut bar on short/landscape screens */
-      .mdt-card { padding-bottom: calc(clamp(1.5rem, 6vh, 3.5rem) + 4rem + env(safe-area-inset-bottom, 0px)) !important; }
-      #mdt-overlay .mdt-shortcut { min-width: 4rem !important; padding: 0.4rem !important;
-        font-size: 0.68rem !important; }
     }
     .mdt-btn { display: block !important; width: 100% !important; max-width: 360px !important; padding: 0.9rem !important;
       margin: 0 auto 0.75rem !important;
@@ -1986,55 +1967,50 @@
     document.documentElement.appendChild(gear);
   }
 
-  // Quick-redirect row pinned to the bottom of the overlay — a better thing
-  // to do than the distraction. A GM-storage override ('shortcuts') wins over
-  // CONFIG.SHORTCUTS so per-device edits survive @updateURL auto-updates.
+  // Quick redirects to a better use of time. A GM-storage override
+  // ('shortcuts') wins over CONFIG.SHORTCUTS so per-device edits survive
+  // @updateURL auto-updates.
   async function shortcutList() {
     const override = await store.get('shortcuts', null);
     return Array.isArray(override) ? override : (CONFIG.SHORTCUTS || []);
   }
 
-  async function buildShortcutsBar() {
-    const list = await shortcutList();
+  // One compact line of quick links (icon + label · icon + label · …) shown
+  // under "Continue to …" on the choice screen — a lighter alternative to
+  // opening the site. Geometry pinned inline so hostile site resets on
+  // a/svg/line-height can't distort it.
+  function buildShortcutsRow(list) {
     if (!list.length) return null;
-    const bar = el('div', 'mdt-shortcuts');
-    // Geometry pinned inline (CSSOM !important beats any author stylesheet
-    // regardless of specificity) — some tracked sites (The Verge, Lapresse)
-    // ship aggressive resets on a/div/svg/line-height that otherwise squash
-    // these. Background + hover stay in the stylesheet so :hover can win.
-    setImportant(bar, {
-      position: 'absolute', left: '0', right: '0',
-      bottom: 'calc(0.75rem + env(safe-area-inset-bottom, 0px))', 'z-index': '1',
-      display: 'flex', 'flex-direction': 'row', 'align-items': 'stretch',
-      'justify-content': 'center', gap: '0.6rem', padding: '0 1rem', margin: '0',
-      'box-sizing': 'border-box', 'pointer-events': 'none',
+    const row = el('div', 'mdt-shortcuts');
+    setImportant(row, {
+      display: 'flex', 'flex-direction': 'row', 'align-items': 'center',
+      'justify-content': 'center', 'flex-wrap': 'wrap', gap: '0.35rem 1.1rem',
+      margin: '0.9rem auto 0', padding: '0', 'box-sizing': 'border-box',
     });
     for (const s of list) {
       // A real <a> (not window.open) so iOS reliably hands custom app schemes
-      // like shortcuts:// to the OS; opens in a new context so the tracked
-      // tab — and this overlay — stay put underneath.
+      // like shortcuts:// to the OS; opens in a new context so the overlay
+      // stays put underneath.
       const a = document.createElement('a');
       a.className = 'mdt-shortcut';
       a.href = s.url;
       a.target = '_blank';
       a.rel = 'noopener noreferrer';
       setImportant(a, {
-        'pointer-events': 'auto', display: 'flex', 'flex-direction': 'column',
-        'align-items': 'center', 'justify-content': 'center', gap: '0.3rem',
-        'box-sizing': 'border-box', 'min-width': '4.6rem', width: 'auto', height: 'auto',
-        padding: '0.6rem 0.5rem', margin: '0', border: 'none', 'border-radius': '16px',
-        color: '#fff', 'text-decoration': 'none', 'text-transform': 'none',
-        'font-family': '-apple-system, BlinkMacSystemFont, sans-serif',
-        'font-size': '0.72rem', 'font-weight': '600', 'line-height': '1.1',
+        display: 'inline-flex', 'align-items': 'center', gap: '0.4rem',
+        'box-sizing': 'border-box', margin: '0', padding: '0.15rem 0.2rem',
+        border: 'none', background: 'none', color: '#fff', 'text-decoration': 'none',
+        'text-transform': 'none', 'font-family': '-apple-system, BlinkMacSystemFont, sans-serif',
+        'font-size': '0.9rem', 'font-weight': '600', 'line-height': '1.2',
         'letter-spacing': '0.01em', cursor: 'pointer',
       });
-      if (icons[s.icon]) a.appendChild(icons[s.icon](22));
+      if (icons[s.icon]) a.appendChild(icons[s.icon](17));
       const label = el('span', 'mdt-shortcut-label', s.label);
       setImportant(label, { 'line-height': '1', margin: '0', 'white-space': 'nowrap' });
       a.appendChild(label);
-      bar.appendChild(a);
+      row.appendChild(a);
     }
-    return bar;
+    return row;
   }
 
   function buildOverlay() {
@@ -2043,9 +2019,6 @@
     const card = el('div', 'mdt-card');
     overlay.appendChild(card);
     document.documentElement.appendChild(overlay);
-    // Bottom shortcut bar lives on the overlay (not the card), so it persists
-    // across every card rebuild — breathing, choice, and the pickers.
-    buildShortcutsBar().then(bar => { if (bar && overlay.isConnected) overlay.appendChild(bar); });
     // Same z-index wins by DOM order — keep the gear clickable over the overlay.
     const gear = document.getElementById('mdt-gear');
     if (gear) document.documentElement.appendChild(gear);
@@ -2257,7 +2230,7 @@
 
   async function showChoice(ui, stats, onLeave, onMore) {
     const { card } = ui;
-    const remainingToday = await unlockRemainingToday();
+    const [remainingToday, shortcuts] = await Promise.all([unlockRemainingToday(), shortcutList()]);
     while (card.firstChild) card.removeChild(card.firstChild);
     card.append(
       ...buildStatHeader(stats),
@@ -2279,6 +2252,9 @@
       card.appendChild(el('div', 'mdt-budget',
         `Daily unlock limit reached (${CONFIG.DAILY_UNLOCK_MAX_MINS} min) — back tomorrow.`));
     }
+    // Consolidated quick redirects, directly under "Continue to …".
+    const shortcutsRow = buildShortcutsRow(shortcuts);
+    if (shortcutsRow) card.appendChild(shortcutsRow);
     if (!stats.signedIn) {
       const signIn = el('button', 'mdt-btn-ghost',
         sync.name === 'gdrive' ? 'Not syncing — connect Google Drive' : 'Not syncing — sign in');
