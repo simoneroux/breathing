@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      2.14.0
+// @version      2.14.1
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
 // @author       Simon Roux
 // @homepageURL  https://github.com/simoneroux/breathing
@@ -1092,15 +1092,15 @@
        these are the visual layer + hover (kept in CSS so :hover can win).
        Subtle: translucent, thin ring, no heavy shadow — sits quietly on the
        breathing circle rather than shouting like a media player. */
-    #mdt-overlay .mdt-play { background: rgba(255,255,255,0.16) !important; color: #fff !important;
-      border: 1px solid rgba(255,255,255,0.32) !important; box-shadow: none !important; opacity: 0 !important;
-      -webkit-backdrop-filter: blur(2px) !important; backdrop-filter: blur(2px) !important;
-      transition: opacity 0.25s ease !important; }
-    /* The whole circle is the start target; the glyph reveals on hover. */
+    /* Always visible, understated: a thin ring in the same translucent white
+       as the square/circle, with a softened arrow. The whole circle is the
+       start target; hover just lifts the ring slightly. */
+    #mdt-overlay .mdt-play { background: none !important; color: rgba(255,255,255,0.75) !important;
+      border: 1.5px solid rgba(255,255,255,0.3) !important; box-shadow: none !important; opacity: 1 !important;
+      transition: border-color 0.2s ease, color 0.2s ease !important; }
     #mdt-overlay .mdt-stage.mdt-gated { cursor: pointer !important; }
-    #mdt-overlay .mdt-stage.mdt-gated:hover .mdt-play { opacity: 1 !important; }
-    /* Touch has no hover — keep the glyph visible there. */
-    @media (hover: none) { #mdt-overlay .mdt-play { opacity: 1 !important; } }
+    #mdt-overlay .mdt-stage.mdt-gated:hover .mdt-play { border-color: rgba(255,255,255,0.5) !important;
+      color: rgba(255,255,255,0.95) !important; }
     #mdt-overlay .mdt-cyclecount { font-size: 0.9rem !important; opacity: 0.6 !important;
       margin: -0.75rem 0 0 !important; font-variant-numeric: tabular-nums !important;
       letter-spacing: 0.01em !important; }
@@ -2145,10 +2145,9 @@
     };
 
     if (gated) {
-      stage.classList.add('mdt-gated'); // pointer cursor + hover-reveal for the play glyph
+      stage.classList.add('mdt-gated'); // pointer cursor for the whole circle
       // Visual-only play glyph (pointer-events:none) — the whole circle is the
-      // start target; the glyph fades in on hover, and always shows on touch
-      // devices where there is no hover (see the @media (hover: none) rule).
+      // start target. Always visible; hover just brightens the ring slightly.
       const playIcon = el('div', 'mdt-play');
       playIcon.appendChild(icons.play(24));
       setImportant(playIcon, {
