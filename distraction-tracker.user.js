@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      2.14.1
+// @version      2.15.0
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
 // @author       Simon Roux
 // @homepageURL  https://github.com/simoneroux/breathing
@@ -1092,15 +1092,14 @@
        these are the visual layer + hover (kept in CSS so :hover can win).
        Subtle: translucent, thin ring, no heavy shadow — sits quietly on the
        breathing circle rather than shouting like a media player. */
-    /* Always visible, understated: a thin ring in the same translucent white
-       as the square/circle, with a softened arrow. The whole circle is the
-       start target; hover just lifts the ring slightly. */
-    #mdt-overlay .mdt-play { background: none !important; color: rgba(255,255,255,0.75) !important;
-      border: 1.5px solid rgba(255,255,255,0.3) !important; box-shadow: none !important; opacity: 1 !important;
-      transition: border-color 0.2s ease, color 0.2s ease !important; }
+    /* Always-visible outline triangle — no ring/disc, just the arrow in the
+       same translucent white as the square/circle. Whole circle starts it;
+       hover brightens the arrow. */
+    #mdt-overlay .mdt-play { background: none !important; color: rgba(255,255,255,0.6) !important;
+      border: none !important; box-shadow: none !important; opacity: 1 !important;
+      transition: color 0.2s ease !important; }
     #mdt-overlay .mdt-stage.mdt-gated { cursor: pointer !important; }
-    #mdt-overlay .mdt-stage.mdt-gated:hover .mdt-play { border-color: rgba(255,255,255,0.5) !important;
-      color: rgba(255,255,255,0.95) !important; }
+    #mdt-overlay .mdt-stage.mdt-gated:hover .mdt-play { color: rgba(255,255,255,0.9) !important; }
     #mdt-overlay .mdt-cyclecount { font-size: 0.9rem !important; opacity: 0.6 !important;
       margin: -0.75rem 0 0 !important; font-variant-numeric: tabular-nums !important;
       letter-spacing: 0.01em !important; }
@@ -1376,12 +1375,10 @@
       ['path', { d: 'M13 6h8' }], ['path', { d: 'M13 12h8' }], ['path', { d: 'M13 18h8' }],
     ]),
     chevron: (size = 16) => iconEl(size, [['path', { d: 'm6 9 6 6 6-6' }]]),
-    // Filled play triangle, nudged right of center so it reads as centered.
-    play: (size = 30) => {
-      const svg = svgEl('svg', { viewBox: '0 0 24 24', fill: 'currentColor', stroke: 'none' });
-      setImportant(svg, { width: `${size}px`, height: `${size}px`, display: 'block',
-        'pointer-events': 'none', 'margin-left': '2px' });
-      svg.appendChild(svgEl('path', { d: 'M8 5.14v13.72a1 1 0 0 0 1.52.86l10.5-6.86a1 1 0 0 0 0-1.72L9.52 4.28A1 1 0 0 0 8 5.14z' }));
+    // Outline play triangle (stroked, not filled), thin for subtlety.
+    play: (size = 44) => {
+      const svg = iconEl(size, [['path', { d: 'M8 5 L19 12 L8 19 Z' }]]);
+      svg.setAttribute('stroke-width', '1.75');
       return svg;
     },
   };
@@ -1975,17 +1972,45 @@
     return Array.isArray(override) ? override : (CONFIG.SHORTCUTS || []);
   }
 
-  // One compact line of quick links (icon + label · icon + label · …) shown
-  // under "Continue to …" on the choice screen — a lighter alternative to
-  // opening the site. Geometry pinned inline so hostile site resets on
-  // a/svg/line-height can't distort it.
+  // Quick redirects to a better use of time, cached once per page load so
+  // every screen can render them synchronously.
+  let shortcutsCached = [];
+
+  // Labelled block ("Or do something more productive:" + a compact link row)
+  // shown on every overlay screen. Returns null when there are no shortcuts.
+  function buildShortcutsBlock() {
+    const row = buildShortcutsRow(shortcutsCached);
+    if (!row) return null;
+    const block = el('div', 'mdt-alts');
+    setImportant(block, {
+      display: 'flex', 'flex-direction': 'column', 'align-items': 'center',
+      gap: '0.5rem', margin: '1.25rem auto 0', 'box-sizing': 'border-box',
+    });
+    const label = el('div', 'mdt-alts-label', 'Or do something more productive:');
+    setImportant(label, {
+      'font-family': '-apple-system, BlinkMacSystemFont, sans-serif',
+      'font-size': '0.8rem', 'font-weight': '500', color: '#fff', opacity: '0.55',
+      margin: '0', 'line-height': '1.3', 'text-align': 'center',
+    });
+    block.append(label, row);
+    return block;
+  }
+
+  function appendShortcuts(card) {
+    const block = buildShortcutsBlock();
+    if (block) card.appendChild(block);
+  }
+
+  // One compact line of quick links (icon + label · icon + label · …) — a
+  // lighter alternative to opening the site. Geometry pinned inline so
+  // hostile site resets on a/svg/line-height can't distort it.
   function buildShortcutsRow(list) {
     if (!list.length) return null;
     const row = el('div', 'mdt-shortcuts');
     setImportant(row, {
       display: 'flex', 'flex-direction': 'row', 'align-items': 'center',
       'justify-content': 'center', 'flex-wrap': 'wrap', gap: '0.35rem 1.1rem',
-      margin: '0.9rem auto 0', padding: '0', 'box-sizing': 'border-box',
+      margin: '0 auto', padding: '0', 'box-sizing': 'border-box',
     });
     for (const s of list) {
       // A real <a> (not window.open) so iOS reliably hands custom app schemes
@@ -2090,6 +2115,7 @@
     const cycleCount = el('div', 'mdt-cyclecount', '');
     const budgetNote = el('div', 'mdt-budget', '');
     card.append(...buildStatHeader(stats), stage, phase, cycleCount, budgetNote);
+    appendShortcuts(card); // alternatives on the start/breathing screen too
     unlockRemainingToday().then(rem => {
       if (rem < 1) {
         budgetNote.textContent =
@@ -2149,11 +2175,10 @@
       // Visual-only play glyph (pointer-events:none) — the whole circle is the
       // start target. Always visible; hover just brightens the ring slightly.
       const playIcon = el('div', 'mdt-play');
-      playIcon.appendChild(icons.play(24));
+      playIcon.appendChild(icons.play(44));
       setImportant(playIcon, {
         position: 'absolute', left: '50%', top: '50%',
-        transform: 'translate(-50%, -50%)', width: '60px', height: '60px',
-        'border-radius': '50%', margin: '0', padding: '0',
+        transform: 'translate(-50%, -50%)', margin: '0', padding: '0',
         display: 'flex', 'align-items': 'center', 'justify-content': 'center',
         'pointer-events': 'none', 'z-index': '2', 'box-sizing': 'border-box',
       });
@@ -2229,7 +2254,7 @@
 
   async function showChoice(ui, stats, onLeave, onMore) {
     const { card } = ui;
-    const [remainingToday, shortcuts] = await Promise.all([unlockRemainingToday(), shortcutList()]);
+    const remainingToday = await unlockRemainingToday();
     while (card.firstChild) card.removeChild(card.firstChild);
     card.append(
       ...buildStatHeader(stats),
@@ -2251,9 +2276,8 @@
       card.appendChild(el('div', 'mdt-budget',
         `Daily unlock limit reached (${CONFIG.DAILY_UNLOCK_MAX_MINS} min) — back tomorrow.`));
     }
-    // Consolidated quick redirects, directly under "Continue to …".
-    const shortcutsRow = buildShortcutsRow(shortcuts);
-    if (shortcutsRow) card.appendChild(shortcutsRow);
+    // Quick redirects, directly under "Continue to …".
+    appendShortcuts(card);
     if (!stats.signedIn) {
       const signIn = el('button', 'mdt-btn-ghost',
         sync.name === 'gdrive' ? 'Not syncing — connect Google Drive' : 'Not syncing — sign in');
@@ -2344,6 +2368,7 @@
       onLeave();
     };
     card.append(leaveBtn, continueBtn);
+    appendShortcuts(card);
   }
 
   function showCyclePicker(ui, stats, onLeave, onMore) {
@@ -2363,6 +2388,7 @@
     const back = el('button', 'mdt-btn-ghost', 'Back');
     back.onclick = () => showChoice(ui, stats, onLeave, onMore);
     card.append(pills, back);
+    appendShortcuts(card);
   }
 
   function hidePage() {
@@ -2382,6 +2408,7 @@
     if (await isUnlocked()) { showRelockBar(); return; } // site loads normally
 
     hidePage();
+    shortcutsCached = await shortcutList(); // resolve once so every screen renders it synchronously
     const ui = buildOverlay();
     let currentStats = {
       ...await localStats(),
