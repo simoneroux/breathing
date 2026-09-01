@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      2.15.1
+// @version      2.15.2
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
 // @author       Simon Roux
 // @homepageURL  https://github.com/simoneroux/breathing
@@ -1059,8 +1059,12 @@
        resets that beat bare single-class selectors. The circle is also
        self-centering (absolute + translate baked into both transform states)
        so it never depends on the parent's flex properties surviving. */
+    /* Width is also bounded by available height (100dvh minus room for the
+       header, prompt, dropdown and alternatives) so the whole interface fits
+       without scrolling on wide-but-short windows. */
     #mdt-overlay .mdt-stage { position: relative !important; flex-shrink: 0 !important;
-      width: clamp(200px, 52vmin, 480px) !important; aspect-ratio: 1 / 1 !important; height: auto !important;
+      width: clamp(140px, min(52vmin, calc(74dvh - 19rem)), 480px) !important;
+      aspect-ratio: 1 / 1 !important; height: auto !important;
       margin: clamp(0.5rem, 2.5vh, 1.5rem) auto clamp(1.4rem, 4vh, 2.5rem) !important;
       display: flex !important; align-items: center !important; justify-content: center !important; }
     #mdt-overlay .mdt-square { position: absolute !important; inset: 0 !important; border: 1.5px solid rgba(255,255,255,0.3) !important;
@@ -1127,8 +1131,8 @@
     @media (max-height: 600px) {
       .mdt-big-num { font-size: 2rem !important; }
       .mdt-stats { margin-bottom: 0.75rem !important; line-height: 1.4 !important; }
-      #mdt-overlay .mdt-stage { width: clamp(150px, 48vh, 300px) !important; height: auto !important;
-        margin: 0.25rem auto 1rem !important; }
+      /* stage width is already height-bounded by the base rule; just tighten margins */
+      #mdt-overlay .mdt-stage { margin: 0.25rem auto 1rem !important; }
       .mdt-phase { margin-bottom: 1rem !important; }
       .mdt-title { font-size: 1.2rem !important; }
       .mdt-dial { width: min(40vh, 220px) !important; margin-bottom: 0.75rem !important; }
