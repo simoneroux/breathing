@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      2.15.0
+// @version      2.15.1
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
 // @author       Simon Roux
 // @homepageURL  https://github.com/simoneroux/breathing
@@ -1100,6 +1100,11 @@
       transition: color 0.2s ease !important; }
     #mdt-overlay .mdt-stage.mdt-gated { cursor: pointer !important; }
     #mdt-overlay .mdt-stage.mdt-gated:hover .mdt-play { color: rgba(255,255,255,0.9) !important; }
+    /* While actively breathing, fade the productive-options block almost out
+       of the way — full opacity again on hover, so it stays reachable. */
+    #mdt-overlay .mdt-alts { transition: opacity 0.5s ease !important; }
+    #mdt-overlay.mdt-breathing .mdt-alts { opacity: 0.12 !important; }
+    #mdt-overlay.mdt-breathing .mdt-alts:hover { opacity: 1 !important; }
     #mdt-overlay .mdt-cyclecount { font-size: 0.9rem !important; opacity: 0.6 !important;
       margin: -0.75rem 0 0 !important; font-variant-numeric: tabular-nums !important;
       letter-spacing: 0.01em !important; }
@@ -2143,6 +2148,7 @@
     const runCycles = (count) => {
       const infinite = !isFinite(count);
       dot.classList.add('mdt-running');
+      overlay.classList.add('mdt-breathing'); // dampen the productive-options block while breathing
       if (infinite) {
         // "Just breathe": loop until the user taps the circle to finish.
         setImportant(stage, { cursor: 'pointer' });
@@ -2163,7 +2169,7 @@
           cyclesDone++;
           if (infinite) cycleCount.textContent = infiniteLabel();
         }
-        overlay.classList.remove('mdt-hold');
+        overlay.classList.remove('mdt-hold', 'mdt-breathing');
         stage.onclick = null;
         logEvent('breathing', { cycles: cyclesDone });
         onDone();
