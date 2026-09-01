@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      2.12.1
+// @version      2.13.0
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
 // @author       Simon Roux
 // @homepageURL  https://github.com/simoneroux/breathing
@@ -1107,12 +1107,19 @@
        these are the visual layer + hover (kept in CSS so :hover can win).
        Subtle: translucent, thin ring, no heavy shadow — sits quietly on the
        breathing circle rather than shouting like a media player. */
-    #mdt-overlay .mdt-play { background: rgba(255,255,255,0.14) !important; color: #fff !important;
-      border: 1px solid rgba(255,255,255,0.3) !important; box-shadow: none !important;
+    #mdt-overlay .mdt-play { background: rgba(255,255,255,0.16) !important; color: #fff !important;
+      border: 1px solid rgba(255,255,255,0.32) !important; box-shadow: none !important; opacity: 0 !important;
       -webkit-backdrop-filter: blur(2px) !important; backdrop-filter: blur(2px) !important;
-      -webkit-tap-highlight-color: transparent !important;
-      transition: background 0.2s ease, transform 0.2s ease !important; }
-    #mdt-overlay .mdt-play:hover { background: rgba(255,255,255,0.24) !important; }
+      transition: opacity 0.25s ease !important; }
+    /* The whole circle is the start target; the glyph reveals on hover. */
+    #mdt-overlay .mdt-stage.mdt-gated { cursor: pointer !important; }
+    #mdt-overlay .mdt-stage.mdt-gated:hover .mdt-play { opacity: 1 !important; }
+    /* Touch has no hover — keep the glyph visible there. */
+    @media (hover: none) { #mdt-overlay .mdt-play { opacity: 1 !important; } }
+    #mdt-overlay .mdt-cyclecount { font-size: 0.9rem !important; opacity: 0.6 !important;
+      margin: -0.75rem 0 0 !important; font-variant-numeric: tabular-nums !important;
+      letter-spacing: 0.01em !important; }
+    #mdt-overlay .mdt-cyclecount:empty { display: none !important; }
     /* Start-screen cycle dropdown — geometry pinned inline in buildCyclePicker */
     #mdt-overlay .mdt-cyclepick-select:hover { background: rgba(255,255,255,0.18) !important; }
     #mdt-overlay .mdt-cyclepick-select option { color: #1c1c28 !important; background: #fff !important; }
@@ -2105,8 +2112,11 @@
     // unlock time is spent, say so here — the user learns the outcome up
     // front instead of after breathing through to the choice screen. The
     // breathing itself always runs.
+    // Live cycle count under the instructions — only used by "Just breathe"
+    // (infinite) mode; hidden while empty.
+    const cycleCount = el('div', 'mdt-cyclecount', '');
     const budgetNote = el('div', 'mdt-budget', '');
-    card.append(...buildStatHeader(stats), stage, phase, budgetNote);
+    card.append(...buildStatHeader(stats), stage, phase, cycleCount, budgetNote);
     unlockRemainingToday().then(rem => {
       if (rem < 1) {
         budgetNote.textContent =
@@ -2119,65 +2129,80 @@
     void circle.offsetWidth;
 
     const wait = ms => new Promise(r => setTimeout(r, ms));
+    let cyclesDone = 0;
+    let stopRequested = false;
+    // One box cycle: inhale, hold, exhale, hold. `hold` drives the darker
+    // overlay + circle tint; the inhale/exhale steps set the circle scale.
+    const phaseSteps = [
+      { text: 'Breathe in', scale: 2.15, hold: false },
+      { text: 'Hold', hold: true },
+      { text: 'Breathe out', scale: 1, hold: false },
+      { text: 'Hold', hold: true },
+    ];
+    const infiniteLabel = () =>
+      `${cyclesDone} cycle${cyclesDone === 1 ? '' : 's'} · tap to finish`;
     const runCycles = (count) => {
+      const infinite = !isFinite(count);
       dot.classList.add('mdt-running');
+      if (infinite) {
+        // "Just breathe": loop until the user taps the circle to finish.
+        setImportant(stage, { cursor: 'pointer' });
+        stage.onclick = () => { stopRequested = true; };
+        cycleCount.textContent = infiniteLabel();
+      }
       (async () => {
-        for (let cycle = 0; cycle < count; cycle++) {
-          phase.textContent = 'Breathe in';
-          setScale(2.15);
-          overlay.classList.remove('mdt-hold');
-          circle.classList.remove('mdt-hold-circle');
-          await wait(CONFIG.PHASE_MS);
-
-          phase.textContent = 'Hold';
-          overlay.classList.add('mdt-hold');
-          circle.classList.add('mdt-hold-circle');
-          await wait(CONFIG.PHASE_MS);
-
-          phase.textContent = 'Breathe out';
-          setScale(1);
-          overlay.classList.remove('mdt-hold');
-          circle.classList.remove('mdt-hold-circle');
-          await wait(CONFIG.PHASE_MS);
-
-          phase.textContent = 'Hold';
-          overlay.classList.add('mdt-hold');
-          circle.classList.add('mdt-hold-circle');
-          await wait(CONFIG.PHASE_MS);
+        while (infinite ? !stopRequested : cyclesDone < count) {
+          for (const step of phaseSteps) {
+            if (stopRequested) break;
+            phase.textContent = step.text;
+            if (step.scale !== undefined) setScale(step.scale);
+            overlay.classList.toggle('mdt-hold', step.hold);
+            circle.classList.toggle('mdt-hold-circle', step.hold);
+            await wait(CONFIG.PHASE_MS);
+          }
+          if (stopRequested) break;
+          cyclesDone++;
+          if (infinite) cycleCount.textContent = infiniteLabel();
         }
         overlay.classList.remove('mdt-hold');
-        logEvent('breathing', { cycles: count });
+        stage.onclick = null;
+        logEvent('breathing', { cycles: cyclesDone });
         onDone();
       })();
     };
 
     if (gated) {
-      // Subtle play button in the centre of the circle — a deliberate start.
-      const playBtn = el('button', 'mdt-play');
-      playBtn.title = 'Start breathing';
-      playBtn.appendChild(icons.play(24));
-      setImportant(playBtn, {
+      stage.classList.add('mdt-gated'); // pointer cursor + hover-reveal for the play glyph
+      // Visual-only play glyph (pointer-events:none) — the whole circle is the
+      // start target; the glyph fades in on hover, and always shows on touch
+      // devices where there is no hover (see the @media (hover: none) rule).
+      const playIcon = el('div', 'mdt-play');
+      playIcon.appendChild(icons.play(24));
+      setImportant(playIcon, {
         position: 'absolute', left: '50%', top: '50%',
         transform: 'translate(-50%, -50%)', width: '60px', height: '60px',
         'border-radius': '50%', margin: '0', padding: '0',
         display: 'flex', 'align-items': 'center', 'justify-content': 'center',
-        cursor: 'pointer', 'z-index': '2', 'box-sizing': 'border-box',
+        'pointer-events': 'none', 'z-index': '2', 'box-sizing': 'border-box',
       });
-      stage.appendChild(playBtn);
+      stage.appendChild(playIcon);
 
-      // Cycle-count dropdown under the prompt (default from CONFIG.BREATH_CYCLES).
+      // Cycle dropdown under the prompt (default CONFIG.BREATH_CYCLES; the
+      // "Just breathe" option runs until finished).
       let selected = cycles;
       const picker = buildCyclePicker(cycles, n => { selected = n; });
       phase.after(picker);
 
       const start = () => {
-        playBtn.remove();
+        stage.classList.remove('mdt-gated');
+        stage.onclick = null;
+        playIcon.remove();
         picker.remove();
         phase.textContent = 'Breathe in';
         void circle.offsetWidth; // flush before the first scale-up
         runCycles(selected);
       };
-      playBtn.onclick = start;
+      stage.onclick = start;
     } else {
       runCycles(cycles);
     }
@@ -2200,6 +2225,11 @@
       if (n === defaultN) opt.selected = true;
       select.appendChild(opt);
     }
+    // Open-ended mode: breathe until you tap to finish.
+    const justBreathe = document.createElement('option');
+    justBreathe.value = 'inf';
+    justBreathe.textContent = 'Just breathe';
+    select.appendChild(justBreathe);
     setImportant(select, {
       appearance: 'none', '-webkit-appearance': 'none', '-moz-appearance': 'none',
       background: 'rgba(255,255,255,0.12)', color: '#fff', border: '1px solid rgba(255,255,255,0.22)',
@@ -2208,7 +2238,7 @@
       'text-align': 'center', 'text-align-last': 'center', cursor: 'pointer',
       'box-sizing': 'border-box', outline: 'none', 'box-shadow': 'none', width: 'auto', height: 'auto',
     });
-    select.onchange = () => onChange(+select.value);
+    select.onchange = () => onChange(select.value === 'inf' ? Infinity : +select.value);
     const chev = icons.chevron(16);
     setImportant(chev, { position: 'absolute', right: '0.85rem', top: '50%',
       transform: 'translateY(-50%)', 'pointer-events': 'none', opacity: '0.8',
