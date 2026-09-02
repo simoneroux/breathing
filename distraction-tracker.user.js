@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      2.15.2
+// @version      2.16.0
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
 // @author       Simon Roux
 // @homepageURL  https://github.com/simoneroux/breathing
@@ -1171,9 +1171,8 @@
       background: linear-gradient(135deg, #4d5890, #3f4877) !important; color: #fff !important;
       font-family: -apple-system, BlinkMacSystemFont, sans-serif !important;
       font-size: 13px !important; font-weight: 600 !important; text-align: center !important;
-      cursor: pointer !important; border-bottom: 1px solid rgba(255,255,255,0.2) !important;
-      font-variant-numeric: tabular-nums !important; transition: background 0.2s ease !important; }
-    #mdt-relock:hover { background: linear-gradient(135deg, #353d66, #2b3254) !important; }
+      border-bottom: 1px solid rgba(255,255,255,0.2) !important;
+      font-variant-numeric: tabular-nums !important; }
     html.mdt-relock-pad { padding-top: calc(40px + env(safe-area-inset-top, 0px)) !important; }
     html.mdt-relock-pad #mdt-gear { top: calc(48px + env(safe-area-inset-top, 0px)) !important; }
 
@@ -1916,46 +1915,35 @@
     renderFooter();
   }
 
-  // ── Re-lock bar — countdown + tap to re-lock; auto re-locks at expiry ────
+  // ── Re-lock bar — informational countdown; auto re-locks at expiry ───────
+  // No manual re-lock and no refund: the minutes you pick are committed
+  // ("burnt"), which makes the choice of how long more intentional. The
+  // expiry instant is snapshotted once, so a transient GM read can't be
+  // mistaken for "expired" and wrongly drop a still-valid unlock mid-session
+  // (the cause of unlocks seeming not to carry across a site's pages).
   let relockInterval = null;
   async function showRelockBar() {
     if (document.getElementById('mdt-relock')) return;
+    const unlock = await store.get(`unlock:${host}`, null);
+    if (!unlock || Date.now() >= unlock.until) { // gone/expired: let interception run
+      await GM.deleteValue(`unlock:${host}`);
+      return;
+    }
+    const until = unlock.until;
+    const remainingToday = await unlockRemainingToday();
     const bar = el('div');
     bar.id = 'mdt-relock';
-    // Static for the whole session: minutes were charged up front at unlock.
-    const remainingToday = await unlockRemainingToday();
-    const update = async () => {
-      const unlock = await store.get(`unlock:${host}`, null);
-      const remaining = unlock ? unlock.until - Date.now() : 0;
+    const update = () => {
+      const remaining = until - Date.now();
       if (remaining <= 0) {
-        // session over — reload so the interception runs again
         clearInterval(relockInterval);
-        await GM.deleteValue(`unlock:${host}`);
-        location.reload();
+        GM.deleteValue(`unlock:${host}`);
+        location.reload(); // session over — interception runs again
         return;
       }
       const m = Math.floor(remaining / 60000);
       const s = String(Math.floor((remaining % 60000) / 1000)).padStart(2, '0');
-      bar.textContent = `🔓 ${siteName} unlocked · ${m}:${s} left · ${remainingToday} min left today · tap to re-lock`;
-    };
-    bar.onclick = async () => {
-      // Double-tap guard: the async work below spans several awaits, so a
-      // second tap before the reload would refund (and log) twice.
-      if (bar.dataset.relocking) return;
-      bar.dataset.relocking = '1';
-      clearInterval(relockInterval);
-      // Refund the unused whole minutes — re-locking early shouldn't cost
-      // budget the session never consumed. The 'relocked' event carries the
-      // refund to Supabase so other devices subtract it too; if the reload
-      // cancels the in-flight sync, the event survives in the pending queue.
-      const unlock = await store.get(`unlock:${host}`, null);
-      const refund = unlock ? Math.floor(Math.max(0, unlock.until - Date.now()) / 60000) : 0;
-      if (refund) {
-        await addUnlockUsage(-refund);
-        await logEvent('relocked', { session_mins: refund });
-      }
-      await GM.deleteValue(`unlock:${host}`);
-      location.reload();
+      bar.textContent = `🔓 ${siteName} unlocked · ${m}:${s} left · ${remainingToday} min left today`;
     };
     relockInterval = setInterval(update, 1000);
     update();
