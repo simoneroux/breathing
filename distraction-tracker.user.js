@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      2.16.0
+// @version      2.16.1
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
 // @author       Simon Roux
 // @homepageURL  https://github.com/simoneroux/breathing
@@ -1162,7 +1162,12 @@
       margin: 0 auto 1.5rem !important; touch-action: none !important; cursor: pointer !important;
       -webkit-tap-highlight-color: transparent !important; }
     .mdt-budget { font-size: 0.85rem !important; opacity: 0.7 !important;
-      margin: -0.75rem 0 1.25rem !important; font-variant-numeric: tabular-nums !important; }
+      margin: 0.75rem 0 0.5rem !important; font-variant-numeric: tabular-nums !important; }
+    .mdt-budget:empty { display: none !important; }
+    /* Friendly "daily unlock reached" note, up top under the header */
+    .mdt-topnote { font-size: 0.9rem !important; opacity: 0.75 !important;
+      margin: 0.4rem auto 0 !important; max-width: 420px !important; line-height: 1.4 !important; }
+    .mdt-topnote:empty { display: none !important; }
 
     /* ── Re-lock bar (shown while a site is unlocked) ───────────────────── */
     #mdt-relock { position: fixed !important; top: 0 !important; left: 0 !important; right: 0 !important;
@@ -2103,22 +2108,16 @@
     const setScale = s =>
       circle.style.setProperty('transform', `translate(-50%, -50%) scale(${s})`, 'important');
     const phase = el('div', 'mdt-phase', gated ? 'When you’re ready' : 'Breathe in');
-    // Budget notice lives on the breathing screen itself: when the daily
-    // unlock time is spent, say so here — the user learns the outcome up
-    // front instead of after breathing through to the choice screen. The
-    // breathing itself always runs.
+    // When the daily unlock budget is spent, a friendly note goes up top
+    // (near the header) rather than by the controls — and the breather
+    // defaults to open-ended "Just breathe" (handled in the gated block).
+    const topNote = el('div', 'mdt-topnote', '');
     // Live cycle count under the instructions — only used by "Just breathe"
     // (infinite) mode; hidden while empty.
     const cycleCount = el('div', 'mdt-cyclecount', '');
-    const budgetNote = el('div', 'mdt-budget', '');
-    card.append(...buildStatHeader(stats), stage, phase, cycleCount, budgetNote);
+    const header = buildStatHeader(stats);
+    card.append(...header, topNote, stage, phase, cycleCount);
     appendShortcuts(card); // alternatives on the start/breathing screen too
-    unlockRemainingToday().then(rem => {
-      if (rem < 1) {
-        budgetNote.textContent =
-          `Daily unlock limit reached (${CONFIG.DAILY_UNLOCK_MAX_MINS} min) — back tomorrow.`;
-      }
-    });
     // Force a style flush before the first scale-up: without it the new
     // transform lands in the same frame the circle is inserted, so the 5s
     // transition never runs and the circle pops in already fully grown.
@@ -2187,6 +2186,16 @@
       let selected = cycles;
       const picker = buildCyclePicker(cycles, n => { selected = n; });
       phase.after(picker);
+
+      // Out of daily unlock budget: you can't continue to the site, but you
+      // can always breathe — say so up top and default to open-ended breathing.
+      unlockRemainingToday().then(rem => {
+        if (rem < 1 && document.getElementById('mdt-overlay')) {
+          topNote.textContent = 'Daily unlock reached — but you can always breathe.';
+          const sel = picker.querySelector('select');
+          if (sel) { sel.value = 'inf'; sel.dispatchEvent(new Event('change')); }
+        }
+      });
 
       const start = () => {
         stage.classList.remove('mdt-gated');
@@ -2272,7 +2281,7 @@
       card.appendChild(continueBtn);
     } else {
       card.appendChild(el('div', 'mdt-budget',
-        `Daily unlock limit reached (${CONFIG.DAILY_UNLOCK_MAX_MINS} min) — back tomorrow.`));
+        'Daily unlock reached — but you can always breathe.'));
     }
     // Quick redirects, directly under "Continue to …".
     appendShortcuts(card);
