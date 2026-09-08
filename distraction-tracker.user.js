@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      2.16.1
+// @version      2.16.2
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
 // @author       Simon Roux
 // @homepageURL  https://github.com/simoneroux/breathing
@@ -221,6 +221,16 @@
   const store = {
     get: (key, fallback) => GM.getValue(key, fallback),
     set: (key, val) => GM.setValue(key, val),
+  };
+
+  // Per-origin localStorage, guarded (private mode / partitioned contexts can
+  // throw). Used as a fast, reliable-at-document-start mirror of the unlock
+  // session so it survives same-origin navigation even if a GM read is slow
+  // or not yet ready on that page load.
+  const ls = {
+    get: k => { try { return localStorage.getItem(k); } catch { return null; } },
+    set: (k, v) => { try { localStorage.setItem(k, v); } catch {} },
+    del: k => { try { localStorage.removeItem(k); } catch {} },
   };
 
   function gmRequest(opts) {
@@ -897,14 +907,31 @@
   }
 
   // ── Local unlock session (per host) ──────────────────────────────────────
+  // Stored in BOTH GM (per-script: covers subdomains, feeds the relock bar)
+  // and localStorage (per-origin: instant and reliable at document-start, so
+  // a same-origin article click never re-locks on a laggy GM read). The
+  // session is live while EITHER says so — whichever expiry is later.
+  async function unlockUntil() {
+    let until = Number(ls.get(`mdt-unlock:${host}`)) || 0;
+    const gm = await store.get(`unlock:${host}`, null);
+    if (gm && gm.until > until) until = gm.until;
+    return until;
+  }
+
   async function isUnlocked() {
-    const unlock = await store.get(`unlock:${host}`, null);
-    return !!(unlock && Date.now() < unlock.until);
+    return (await unlockUntil()) > Date.now();
   }
 
   async function unlockHost(mins) {
-    await store.set(`unlock:${host}`, { until: Date.now() + mins * 60000 });
+    const until = Date.now() + mins * 60000;
+    await store.set(`unlock:${host}`, { until });
+    ls.set(`mdt-unlock:${host}`, String(until));
     await addUnlockUsage(mins);
+  }
+
+  async function clearUnlock() {
+    await GM.deleteValue(`unlock:${host}`);
+    ls.del(`mdt-unlock:${host}`);
   }
 
   // ── Daily unlock budget (all sites combined, synced across devices) ─────
@@ -1929,12 +1956,11 @@
   let relockInterval = null;
   async function showRelockBar() {
     if (document.getElementById('mdt-relock')) return;
-    const unlock = await store.get(`unlock:${host}`, null);
-    if (!unlock || Date.now() >= unlock.until) { // gone/expired: let interception run
-      await GM.deleteValue(`unlock:${host}`);
+    const until = await unlockUntil();
+    if (Date.now() >= until) { // gone/expired: let interception run
+      await clearUnlock();
       return;
     }
-    const until = unlock.until;
     const remainingToday = await unlockRemainingToday();
     const bar = el('div');
     bar.id = 'mdt-relock';
@@ -1942,7 +1968,7 @@
       const remaining = until - Date.now();
       if (remaining <= 0) {
         clearInterval(relockInterval);
-        GM.deleteValue(`unlock:${host}`);
+        clearUnlock();
         location.reload(); // session over — interception runs again
         return;
       }
