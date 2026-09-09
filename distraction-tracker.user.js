@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      2.16.2
+// @version      2.17.0
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
 // @author       Simon Roux
 // @homepageURL  https://github.com/simoneroux/breathing
@@ -1032,6 +1032,12 @@
     return Math.max(0, CONFIG.DAILY_UNLOCK_MAX_MINS - await unlockUsedToday());
   }
 
+  // Local-ledger-only remaining — one GM read, no network wait. Used for the
+  // instant header estimate before the cross-device total resolves.
+  async function localUnlockRemainingToday() {
+    return Math.max(0, CONFIG.DAILY_UNLOCK_MAX_MINS - await localUnlockUsedToday());
+  }
+
   async function localStats() {
     return store.get(`stats-cache:${host}`, { attempts24h: 0, prevented24h: 0, minutesSaved24h: 0, lastUse: null });
   }
@@ -1090,7 +1096,7 @@
        header, prompt, dropdown and alternatives) so the whole interface fits
        without scrolling on wide-but-short windows. */
     #mdt-overlay .mdt-stage { position: relative !important; flex-shrink: 0 !important;
-      width: clamp(140px, min(52vmin, calc(74dvh - 19rem)), 480px) !important;
+      width: clamp(140px, min(52vmin, calc(74dvh - 20rem)), 480px) !important;
       aspect-ratio: 1 / 1 !important; height: auto !important;
       margin: clamp(0.5rem, 2.5vh, 1.5rem) auto clamp(1.4rem, 4vh, 2.5rem) !important;
       display: flex !important; align-items: center !important; justify-content: center !important; }
@@ -1150,9 +1156,9 @@
       font-variant-numeric: tabular-nums !important; }
     .mdt-stats { font-size: 0.85rem !important; opacity: 0.75 !important;
       margin: 0 0 clamp(1rem, 3vh, 1.75rem) !important; line-height: 1.6 !important;
-      min-height: 3.2em !important; } /* always reserve 2 lines — the caption
-      can be 1 line ("First time today") or 2; without this the content below
-      shifts when fresh stats swap in */
+      min-height: 4.9em !important; } /* reserve 3 lines (attempts, last use,
+      minutes-left) so the content below doesn't shift as data fills in */
+    .mdt-stats-budget { opacity: 0.85 !important; }
     /* Short viewports (landscape phones, small windows): compress the header
        and stage so everything fits without scrolling. */
     @media (max-height: 600px) {
@@ -2089,6 +2095,14 @@
     caption.appendChild(document.createTextNode(
       stats.lastUse ? `Last use: ${relativeTime(stats.lastUse)} ago` : 'First time today',
     ));
+    // Daily unlock budget remaining — shown fast from the local ledger, then
+    // corrected with the cross-device total once it resolves (never blocks).
+    caption.appendChild(document.createElement('br'));
+    const budgetLine = el('span', 'mdt-stats-budget', '');
+    caption.appendChild(budgetLine);
+    const fill = rem => { budgetLine.textContent = `${rem} min unlock left today`; };
+    localUnlockRemainingToday().then(fill);
+    unlockRemainingToday().then(fill); // authoritative, may differ across devices
     return [el('div', 'mdt-big-num', `${n}`), caption];
   }
 
@@ -2440,14 +2454,22 @@
 
     if (await isUnlocked()) { showRelockBar(); return; } // site loads normally
 
+    // Block immediately: hide the page and show the gate before anything
+    // slow. The first paint needs only local data, so nothing here waits on
+    // the network — remote stats and the exact budget patch in afterwards.
     hidePage();
-    shortcutsCached = await shortcutList(); // resolve once so every screen renders it synchronously
     const ui = buildOverlay();
-    let currentStats = {
-      ...await localStats(),
-      signedIn: await sync.isConnected(),
-    };
-    const attemptEvent = await logEvent('attempt');
+
+    // Local-only reads for the first paint, gathered in parallel.
+    const [cached, connected, sc] = await Promise.all([
+      localStats(), sync.isConnected(), shortcutList(),
+    ]);
+    shortcutsCached = sc;
+    let currentStats = { ...cached, signedIn: connected };
+
+    // Log the attempt without holding up the gate (its id is only needed
+    // later, to exclude it from the fresh-stats query).
+    const attemptP = logEvent('attempt');
     recordLocalAttempt();
 
     const dismiss = () => {
@@ -2470,7 +2492,8 @@
     // Fresh stats patch in progressively — never interrupting a breathing
     // cycle or a picker: mid-breathing the header numbers are swapped in
     // place; the main choice screen is re-rendered wholesale.
-    const fresh = (await sync.isConnected()) && await fetchRemoteStats(attemptEvent.id);
+    const attemptEvent = await attemptP;
+    const fresh = connected && await fetchRemoteStats(attemptEvent.id);
     if (fresh) {
       currentStats = { ...fresh, signedIn: true };
       if (!document.getElementById('mdt-overlay')) return;
@@ -2513,14 +2536,16 @@
     else document.addEventListener('DOMContentLoaded', adopt);
   }
 
-  await initSync();
   if (location.hostname === 'simoneroux.github.io') {
+    await initSync();
     installAuthBridge();
   } else {
-    // Cheap on untracked pages: one throttled background list sync plus one
-    // GM read to decide, then exit without ever touching the DOM.
+    // Cheap on untracked pages: the two GM reads needed to decide run in
+    // parallel, then exit without ever touching the DOM. A throttled list
+    // sync runs in the background.
+    const [, trackedList] = await Promise.all([initSync(), getTrackedSites()]);
     refreshTrackedSites(10);
-    const tracked = matchTrackedSite(location.hostname, await getTrackedSites());
+    const tracked = matchTrackedSite(location.hostname, trackedList);
     if (tracked) {
       host = tracked.host;
       siteName = tracked.display_name || tracked.host;
