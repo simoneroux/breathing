@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Distraction Tracker
 // @namespace    mindful.distraction-tracker
-// @version      2.17.0
+// @version      2.18.0
 // @description  Box-breathing friction + Supabase-backed distraction tracking, One Sec style.
 // @author       Simon Roux
 // @homepageURL  https://github.com/simoneroux/breathing
@@ -68,10 +68,9 @@
     // from the platform). Leave as '' — auto-updates from @updateURL overwrite
     // any manual edits to this file, so per-device edits don't survive.
     DEVICE_NAME: '',
-    UNLOCK_MAX_MINS: 20,     // dial maximum on "Continue" (single session)
-    UNLOCK_DEFAULT_MINS: 5,  // dial starting position
-    DAILY_UNLOCK_MAX_MINS: 60, // total unlock budget per day, all sites combined
-    MORE_CYCLES_OPTIONS: [1, 2, 3, 4], // cycle-count choices for "More breathing"
+    DAILY_UNLOCK_MAX_MINS: 90, // total unlock budget per day, all sites combined.
+    // The time dial spans the whole day's budget: it shows minutes already
+    // used today and you drag up from there to the max for this session.
     BREATH_CYCLES: 2,   // default cycles on the gated start screen (dropdown)
     BREATH_CYCLE_OPTIONS: [1, 2, 3, 4, 5], // choices in the start-screen dropdown
     PHASE_MS: 5000,
@@ -1070,8 +1069,8 @@
        same y-position across the breathing, choice, and dial screens no
        matter how tall the content below it is — no jumping between screens. */
     .mdt-card { text-align: center !important;
-      padding: calc(clamp(2.5rem, 12vh, 6rem) + env(safe-area-inset-top, 0px)) 1.5rem
-               calc(clamp(1.5rem, 6vh, 3.5rem) + env(safe-area-inset-bottom, 0px)) !important;
+      padding: calc(clamp(1.5rem, 7vh, 3.5rem) + env(safe-area-inset-top, 0px)) 1.5rem
+               calc(clamp(1.25rem, 4vh, 2.5rem) + env(safe-area-inset-bottom, 0px)) !important;
       width: 100% !important; overflow-y: auto !important;
       display: flex !important; flex-direction: column !important; align-items: center !important;
       justify-content: flex-start !important; }
@@ -1159,16 +1158,17 @@
       min-height: 4.9em !important; } /* reserve 3 lines (attempts, last use,
       minutes-left) so the content below doesn't shift as data fills in */
     .mdt-stats-budget { opacity: 0.85 !important; }
-    /* Short viewports (landscape phones, small windows): compress the header
-       and stage so everything fits without scrolling. */
-    @media (max-height: 600px) {
-      .mdt-big-num { font-size: 2rem !important; }
-      .mdt-stats { margin-bottom: 0.75rem !important; line-height: 1.4 !important; }
-      /* stage width is already height-bounded by the base rule; just tighten margins */
-      #mdt-overlay .mdt-stage { margin: 0.25rem auto 1rem !important; }
+    /* Short/landscape viewports: compress everything so the content fits
+       without scrolling (the dial/stage widths are already height-bounded). */
+    @media (max-height: 780px) {
+      .mdt-big-num { font-size: 2.2rem !important; }
+      .mdt-stats { margin-bottom: 0.5rem !important; line-height: 1.45 !important; }
+      #mdt-overlay .mdt-stage { margin: 0.25rem auto 0.75rem !important; }
       .mdt-phase { margin-bottom: 1rem !important; }
-      .mdt-title { font-size: 1.2rem !important; }
-      .mdt-dial { width: min(40vh, 220px) !important; margin-bottom: 0.75rem !important; }
+      .mdt-title { font-size: 1.25rem !important; margin-bottom: 0.4rem !important; }
+      .mdt-dial { margin: 0.25rem auto 0.5rem !important; }
+      .mdt-btn { padding: 0.65rem !important; margin-bottom: 0.5rem !important; }
+      .mdt-alts { margin-top: 0.75rem !important; }
     }
     .mdt-btn { display: block !important; width: 100% !important; max-width: 360px !important; padding: 0.9rem !important;
       margin: 0 auto 0.75rem !important;
@@ -1184,15 +1184,11 @@
       font-size: 0.95rem !important; cursor: pointer !important; font-family: inherit !important;
       padding: 0.6rem 1rem !important; margin: 0.25rem auto 0 !important; }
     .mdt-btn-ghost:hover { opacity: 1 !important; }
-    .mdt-pills { display: flex !important; gap: 0.6rem !important; justify-content: center !important;
-      flex-wrap: wrap !important; margin: 0 0 1rem !important; }
-    .mdt-pill { padding: 0.8rem 1.4rem !important; border-radius: 999px !important; border: none !important;
-      background: rgba(255,255,255,0.15) !important; color: #fff !important; font-weight: 700 !important;
-      font-size: 1rem !important; min-width: 3.2rem !important; cursor: pointer !important;
-      font-family: inherit !important; }
-    .mdt-pill:hover { background: rgba(255,255,255,0.3) !important; }
-    .mdt-dial { display: block !important; width: min(64vw, 280px) !important; height: auto !important;
-      margin: 0 auto 1.5rem !important; touch-action: none !important; cursor: pointer !important;
+    /* Width also bounded by available height so the time picker fits short
+       windows (header + title + dial + hint + 2 buttons + alternatives). */
+    .mdt-dial { display: block !important;
+      width: clamp(120px, min(64vw, calc(100dvh - 32rem)), 280px) !important; height: auto !important;
+      margin: 0.25rem auto 1rem !important; touch-action: none !important; cursor: pointer !important;
       -webkit-tap-highlight-color: transparent !important; }
     .mdt-budget { font-size: 0.85rem !important; opacity: 0.7 !important;
       margin: 0.75rem 0 0.5rem !important; font-variant-numeric: tabular-nums !important; }
@@ -1421,6 +1417,11 @@
       ['path', { d: 'M13 6h8' }], ['path', { d: 'M13 12h8' }], ['path', { d: 'M13 18h8' }],
     ]),
     chevron: (size = 16) => iconEl(size, [['path', { d: 'm6 9 6 6 6-6' }]]),
+    wind: (size = 17) => iconEl(size, [
+      ['path', { d: 'M12.8 19.6A2 2 0 1 0 14 16H2' }],
+      ['path', { d: 'M17.5 8a2.5 2.5 0 1 1 2 4H2' }],
+      ['path', { d: 'M9.8 4.4A2 2 0 1 1 11 8H2' }],
+    ]),
     // Outline play triangle (stroked, not filled), thin for subtlety.
     play: (size = 44) => {
       const svg = iconEl(size, [['path', { d: 'M8 5 L19 12 L8 19 Z' }]]);
@@ -2011,9 +2012,10 @@
   let shortcutsCached = [];
 
   // Labelled block ("Or do something more productive:" + a compact link row)
-  // shown on every overlay screen. Returns null when there are no shortcuts.
-  function buildShortcutsBlock() {
-    const row = buildShortcutsRow(shortcutsCached);
+  // shown on every overlay screen. `onBreathe`, when given, adds a Breathe
+  // action to the row. Returns null when there's nothing to show.
+  function buildShortcutsBlock(onBreathe) {
+    const row = buildShortcutsRow(shortcutsCached, onBreathe);
     if (!row) return null;
     const block = el('div', 'mdt-alts');
     setImportant(block, {
@@ -2030,16 +2032,17 @@
     return block;
   }
 
-  function appendShortcuts(card) {
-    const block = buildShortcutsBlock();
+  function appendShortcuts(card, onBreathe) {
+    const block = buildShortcutsBlock(onBreathe);
     if (block) card.appendChild(block);
   }
 
   // One compact line of quick links (icon + label · icon + label · …) — a
   // lighter alternative to opening the site. Geometry pinned inline so
-  // hostile site resets on a/svg/line-height can't distort it.
-  function buildShortcutsRow(list) {
-    if (!list.length) return null;
+  // hostile site resets on a/svg/line-height can't distort it. `onBreathe`
+  // appends a Breathe action alongside the URL links.
+  function buildShortcutsRow(list, onBreathe) {
+    if (!list.length && !onBreathe) return null;
     const row = el('div', 'mdt-shortcuts');
     setImportant(row, {
       display: 'flex', 'flex-direction': 'row', 'align-items': 'center',
@@ -2068,6 +2071,24 @@
       setImportant(label, { 'line-height': '1', margin: '0', 'white-space': 'nowrap' });
       a.appendChild(label);
       row.appendChild(a);
+    }
+    if (onBreathe) {
+      // Breathe is an in-overlay action, not a URL — a button styled to match.
+      const b = el('button', 'mdt-shortcut');
+      setImportant(b, {
+        display: 'inline-flex', 'align-items': 'center', gap: '0.4rem',
+        'box-sizing': 'border-box', margin: '0', padding: '0.15rem 0.2rem',
+        border: 'none', background: 'none', color: '#fff', 'text-transform': 'none',
+        'font-family': '-apple-system, BlinkMacSystemFont, sans-serif',
+        'font-size': '0.9rem', 'font-weight': '600', 'line-height': '1.2',
+        'letter-spacing': '0.01em', cursor: 'pointer',
+      });
+      b.appendChild(icons.wind(17));
+      const bl = el('span', 'mdt-shortcut-label', 'Breathe');
+      setImportant(bl, { 'line-height': '1', margin: '0', 'white-space': 'nowrap' });
+      b.appendChild(bl);
+      b.onclick = onBreathe;
+      row.appendChild(b);
     }
     return row;
   }
@@ -2299,51 +2320,19 @@
     setTimeout(() => { location.href = 'about:blank'; }, 250);
   }
 
-  async function showChoice(ui, stats, onLeave, onMore) {
-    const { card } = ui;
-    const remainingToday = await unlockRemainingToday();
-    while (card.firstChild) card.removeChild(card.firstChild);
-    card.append(
-      ...buildStatHeader(stats),
-      el('div', 'mdt-title', 'What could be a better use of your time?'),
-    );
-
-    // One Sec hierarchy: backing out is the highlighted action, continuing is
-    // a quiet text link at the bottom — and only while daily budget remains.
-    const leaveBtn = el('button', 'mdt-btn mdt-btn-primary', "I don't want to open this");
-    leaveBtn.onclick = abandonSite;
-    const moreBtn = el('button', 'mdt-btn mdt-btn-secondary', 'More breathing');
-    moreBtn.onclick = () => showCyclePicker(ui, stats, onLeave, onMore);
-    card.append(leaveBtn, moreBtn);
-    if (remainingToday >= 1) {
-      const continueBtn = el('button', 'mdt-btn-ghost', `Continue to ${siteName}`);
-      continueBtn.onclick = () => showTimerPicker(ui, stats, onLeave, onMore);
-      card.appendChild(continueBtn);
-    } else {
-      card.appendChild(el('div', 'mdt-budget',
-        'Daily unlock reached — but you can always breathe.'));
-    }
-    // Quick redirects, directly under "Continue to …".
-    appendShortcuts(card);
-    if (!stats.signedIn) {
-      const signIn = el('button', 'mdt-btn-ghost',
-        sync.name === 'gdrive' ? 'Not syncing — connect Google Drive' : 'Not syncing — sign in');
-      // Drive pairing lives in the stats panel footer; Supabase has its own
-      // hosted sign-in page.
-      signIn.onclick = () => (sync.name === 'gdrive' ? openStatsPanel() : openAuthPage());
-      card.appendChild(signIn);
-    }
-  }
-
   function svgEl(tag, attrs) {
     const e = document.createElementNS('http://www.w3.org/2000/svg', tag);
     for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
     return e;
   }
 
-  // Circular arc slider (One Sec-style): a 270° dial, gap at the bottom,
-  // draggable knob, value shown in the center.
-  function buildDial(initialMins, maxMins, onChange) {
+  // Circular arc slider (One Sec-style): a 270° dial, gap at the bottom, with
+  // the day's already-used minutes shown as a muted fill and a draggable knob
+  // you pull UP from there to add time. Domain is 0..max (the daily budget);
+  // the knob is constrained to [used, max]; `onChange(total)` reports the knob
+  // position (used + the session you're granting). Returns a node plus a
+  // `setUsed` to re-baseline once the authoritative used total resolves.
+  function buildDial(max, used, onChange) {
     const SIZE = 200, C = SIZE / 2, R = 78, START = 135, SWEEP = 270;
     const rad = deg => deg * Math.PI / 180;
     const pt = deg => [C + R * Math.cos(rad(deg)), C + R * Math.sin(rad(deg))];
@@ -2352,25 +2341,37 @@
     const L = R * rad(SWEEP); // exact arc length — avoids getTotalLength on a detached node
 
     const svg = svgEl('svg', { viewBox: `0 0 ${SIZE} ${SIZE}`, class: 'mdt-dial' });
-    const track = svgEl('path', { d, fill: 'none', stroke: 'rgba(255,255,255,0.18)', 'stroke-width': 14, 'stroke-linecap': 'round' });
-    const prog = svgEl('path', { d, fill: 'none', stroke: 'rgba(255,255,255,0.85)', 'stroke-width': 14, 'stroke-linecap': 'round' });
+    const track = svgEl('path', { d, fill: 'none', stroke: 'rgba(255,255,255,0.14)', 'stroke-width': 14, 'stroke-linecap': 'round' });
+    // Session fill (used..total) drawn first and bright; used fill (0..used)
+    // drawn over it and muted, so the arc reads muted then bright.
+    const sessionProg = svgEl('path', { d, fill: 'none', stroke: 'rgba(255,255,255,0.9)', 'stroke-width': 14, 'stroke-linecap': 'round' });
+    const usedProg = svgEl('path', { d, fill: 'none', stroke: 'rgba(255,255,255,0.38)', 'stroke-width': 14, 'stroke-linecap': 'round' });
     const knob = svgEl('circle', { r: 11, fill: '#fff' });
     const label = svgEl('text', {
-      x: C, y: C, 'text-anchor': 'middle', 'dominant-baseline': 'central',
-      fill: '#fff', 'font-size': 28, 'font-weight': 700, 'font-family': 'inherit',
+      x: C, y: C - 8, 'text-anchor': 'middle', 'dominant-baseline': 'central',
+      fill: '#fff', 'font-size': 30, 'font-weight': 700, 'font-family': 'inherit',
     });
-    svg.append(track, prog, knob, label);
+    const sub = svgEl('text', {
+      x: C, y: C + 20, 'text-anchor': 'middle', 'dominant-baseline': 'central',
+      fill: 'rgba(255,255,255,0.6)', 'font-size': 12, 'font-weight': 600, 'font-family': 'inherit',
+    });
+    svg.append(track, sessionProg, usedProg, knob, label, sub);
 
-    let mins = initialMins;
-    const span = Math.max(1, maxMins - 1); // maxMins can be 1 when the daily budget is nearly spent
+    let total = used; // knob position; session = total - used
+    const arc = v => { // dasharray that fills 0..v
+      const t = max > 0 ? v / max : 0;
+      return `${L * t} ${L + 30}`;
+    };
     const render = () => {
-      const t = (mins - 1) / span;
-      prog.setAttribute('stroke-dasharray', `${L * t} ${L + 30}`);
-      const [kx, ky] = pt(START + SWEEP * t);
+      sessionProg.setAttribute('stroke-dasharray', arc(total));
+      usedProg.setAttribute('stroke-dasharray', arc(used));
+      const [kx, ky] = pt(START + SWEEP * (max > 0 ? total / max : 0));
       knob.setAttribute('cx', kx);
       knob.setAttribute('cy', ky);
-      label.textContent = `${mins} min`;
-      onChange(mins);
+      const session = total - used;
+      label.textContent = session >= 1 ? `${session} min` : '—';
+      sub.textContent = `${used} min used today`;
+      onChange(total);
     };
     const setFromPointer = ev => {
       const rect = svg.getBoundingClientRect();
@@ -2379,7 +2380,7 @@
       let rel = (Math.atan2(y, x) * 180 / Math.PI - START + 360) % 360;
       // pointer in the bottom gap: snap to the nearer end of the arc
       if (rel > SWEEP) rel = (rel - SWEEP < (360 - SWEEP) / 2) ? SWEEP : 0;
-      mins = Math.max(1, Math.min(maxMins, Math.round(1 + rel / SWEEP * span)));
+      total = Math.max(used, Math.min(max, Math.round(rel / SWEEP * max)));
       render();
     };
     let dragging = false;
@@ -2387,55 +2388,87 @@
     svg.addEventListener('pointermove', e => { if (dragging) setFromPointer(e); });
     svg.addEventListener('pointerup', () => { dragging = false; });
     render();
-    return svg;
-  }
-
-  async function showTimerPicker(ui, stats, onLeave, onMore) {
-    const { card } = ui;
-    const remainingToday = await unlockRemainingToday();
-    while (card.firstChild) card.removeChild(card.firstChild);
-    if (remainingToday < 1) { showChoice(ui, stats, onLeave, onMore); return; }
-    card.append(
-      el('div', 'mdt-title', `How much time do you need on ${siteName}?`),
-      el('div', 'mdt-sub', 'Be realistic — give yourself the time you need to complete the task you have in mind.'),
-    );
-    // The dial can never grant more than what's left of the daily budget.
-    const dialMax = Math.min(CONFIG.UNLOCK_MAX_MINS, remainingToday);
-    let chosen = Math.min(CONFIG.UNLOCK_DEFAULT_MINS, dialMax);
-    card.appendChild(buildDial(chosen, dialMax, m => { chosen = m; }));
-    card.appendChild(el('div', 'mdt-budget',
-      `${remainingToday} of your ${CONFIG.DAILY_UNLOCK_MAX_MINS} unlock minutes left today`));
-
-    const leaveBtn = el('button', 'mdt-btn mdt-btn-primary', `I don't want to open ${siteName}`);
-    leaveBtn.onclick = abandonSite;
-    const continueBtn = el('button', 'mdt-btn-ghost', `Continue to ${siteName}`);
-    continueBtn.onclick = async () => {
-      await unlockHost(chosen);
-      logEvent('proceeded', { session_mins: chosen });
-      onLeave();
+    return {
+      node: svg,
+      // Re-baseline when the cross-device used total arrives; keep any session
+      // the user has already dialed in (don't yank the knob backwards).
+      setUsed: u => { const session = Math.max(0, total - used); used = Math.min(u, max); total = Math.min(max, used + session); render(); },
     };
-    card.append(leaveBtn, continueBtn);
-    appendShortcuts(card);
   }
 
-  function showCyclePicker(ui, stats, onLeave, onMore) {
+  // Primary interception screen: straight to the time dial. Shows how much of
+  // the daily budget is already used (filled) and lets you pull up to add
+  // time; breathing is one of the options at the bottom. `onUnlocked` runs
+  // after a successful unlock (dismiss the overlay + show the relock bar).
+  function showTimePicker(ui, stats, onUnlocked) {
     const { card } = ui;
+    const max = CONFIG.DAILY_UNLOCK_MAX_MINS;
     while (card.firstChild) card.removeChild(card.firstChild);
-    const cycleSecs = CONFIG.PHASE_MS * 4 / 1000;
     card.append(
-      el('div', 'mdt-title', 'More breathing'),
-      el('div', 'mdt-sub', `How many cycles? (${cycleSecs} s each)`),
+      ...buildStatHeader(stats),
+      el('div', 'mdt-title', `How much time on ${siteName}?`),
     );
-    const pills = el('div', 'mdt-pills');
-    for (const nCycles of CONFIG.MORE_CYCLES_OPTIONS) {
-      const pill = el('button', 'mdt-pill', `${nCycles}`);
-      pill.onclick = () => onMore(nCycles);
-      pills.appendChild(pill);
+
+    const continueBtn = el('button', 'mdt-btn mdt-btn-primary', `Continue to ${siteName}`);
+    const hint = el('div', 'mdt-budget', '');
+    // The dial drives `session`; the Continue button reflects it.
+    let session = 0;
+    const onDialChange = (t, usedNow) => {
+      session = Math.max(0, t - usedNow);
+      if (session >= 1) {
+        continueBtn.textContent = `Continue to ${siteName} · ${session} min`;
+        setImportant(continueBtn, { opacity: '1', 'pointer-events': 'auto' });
+        hint.textContent = '';
+      } else {
+        continueBtn.textContent = `Continue to ${siteName}`;
+        setImportant(continueBtn, { opacity: '0.4', 'pointer-events': 'none' });
+        hint.textContent = usedNow >= max
+          ? 'Daily unlock reached — but you can always breathe.'
+          : 'Drag up to choose your time';
+      }
+    };
+
+    // Render the dial immediately from the local used total; re-baseline when
+    // the authoritative cross-device total resolves (keeps it fast).
+    let usedForDial = 0;
+    const dialHolder = el('div');
+    card.appendChild(dialHolder);
+    card.appendChild(hint);
+
+    let dial = null;
+    const mountDial = (used) => {
+      usedForDial = Math.min(used, max);
+      dial = buildDial(max, usedForDial, t => onDialChange(t, usedForDial));
+      dialHolder.appendChild(dial.node);
+    };
+
+    const leaveBtn = el('button', 'mdt-btn mdt-btn-secondary', `I don't want to open ${siteName}`);
+    leaveBtn.onclick = abandonSite;
+    continueBtn.onclick = async () => {
+      if (session < 1) return;
+      await unlockHost(session);
+      logEvent('proceeded', { session_mins: session });
+      onUnlocked();
+    };
+    card.append(continueBtn, leaveBtn);
+
+    // Breathing is now one of the alternatives; it returns here when done.
+    appendShortcuts(card, () =>
+      showBreathing(ui, CONFIG.BREATH_CYCLES, stats, () => showTimePicker(ui, stats, onUnlocked), { gated: true }));
+
+    if (!stats.signedIn) {
+      const signIn = el('button', 'mdt-btn-ghost',
+        sync.name === 'gdrive' ? 'Not syncing — connect Google Drive' : 'Not syncing — sign in');
+      signIn.onclick = () => (sync.name === 'gdrive' ? openStatsPanel() : openAuthPage());
+      card.appendChild(signIn);
     }
-    const back = el('button', 'mdt-btn-ghost', 'Back');
-    back.onclick = () => showChoice(ui, stats, onLeave, onMore);
-    card.append(pills, back);
-    appendShortcuts(card);
+
+    localUnlockUsedToday().then(u => {
+      mountDial(u);
+      onDialChange(usedForDial, usedForDial); // initial button state
+      unlockRemainingToday(); // warm the authoritative total
+      unlockUsedToday().then(a => { if (dial && a !== usedForDial) { usedForDial = Math.min(a, max); dial.setUsed(a); onDialChange(usedForDial + session, usedForDial); } });
+    });
   }
 
   function hidePage() {
@@ -2477,33 +2510,19 @@
       unhidePage();
       showRelockBar();
     };
-    let mode = 'breathing';
-    const renderChoice = () => {
-      mode = 'choice';
-      showChoice(ui, currentStats, dismiss, (nCycles) => {
-        mode = 'breathing';
-        showBreathing(ui, nCycles, currentStats, renderChoice);
-      });
-    };
 
-    // Gated: the interception waits for a deliberate play tap before breathing.
-    showBreathing(ui, CONFIG.BREATH_CYCLES, currentStats, renderChoice, { gated: true });
+    // Straight to the time dial — the interception's primary screen.
+    showTimePicker(ui, currentStats, dismiss);
 
-    // Fresh stats patch in progressively — never interrupting a breathing
-    // cycle or a picker: mid-breathing the header numbers are swapped in
-    // place; the main choice screen is re-rendered wholesale.
+    // Fresh stats patch the header in place (never disturbs the dial or a
+    // breathing run — just swaps the big number + caption wherever they are).
     const attemptEvent = await attemptP;
     const fresh = connected && await fetchRemoteStats(attemptEvent.id);
-    if (fresh) {
+    if (fresh && document.getElementById('mdt-overlay')) {
       currentStats = { ...fresh, signedIn: true };
-      if (!document.getElementById('mdt-overlay')) return;
-      if (mode === 'choice' && ui.card.querySelector('.mdt-stats')) {
-        renderChoice();
-      } else if (mode === 'breathing') {
-        const [bigNum, caption] = buildStatHeader(fresh);
-        ui.card.querySelector('.mdt-big-num')?.replaceWith(bigNum);
-        ui.card.querySelector('.mdt-stats')?.replaceWith(caption);
-      }
+      const [bigNum, caption] = buildStatHeader(currentStats);
+      ui.card.querySelector('.mdt-big-num')?.replaceWith(bigNum);
+      ui.card.querySelector('.mdt-stats')?.replaceWith(caption);
     }
   }
 
